@@ -1,0 +1,24 @@
+services:
+  apc-core:
+    build: .
+    container_name: apc-core-item-explorer
+    user: "1000:1000"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    volumes:
+      - /home/sai/projects/apc-core/state:/state:ro
+      - /home/sai/projects/apc-core/core-data:/core-data:rw
+    environment:
+      APC_CORE_ARTIFACT_ROOT: /state
+      APC_CORE_DATA_DIR: /core-data
+    networks:
+      - apc-program-preview-net
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+networks:
+  apc-program-preview-net:
+    external: true
