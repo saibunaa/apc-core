@@ -118,6 +118,53 @@ class TestCustomerExplorerContract(unittest.TestCase):
             self.assertEqual(["Invoice note"], [note["body"] for note in profile["invoice_notes"]])
             self.assertNotIn("99.99", repr(profile))
 
+    def test_backfill_maps_exact_frm_customer_edit_configuration_and_consignee_contracts_without_pricing_rules(self):
+        """Map only values that frmCustomerEdit actually persists to CUST CON/CONSIGNEE."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "frm-customer-edit-contract.sqlite"
+            connection = sqlite3.connect(source)
+            connection.execute('CREATE TABLE "MainDB__CUST" ("Cust ID" TEXT, "Name" TEXT)')
+            connection.execute('INSERT INTO "MainDB__CUST" VALUES (?, ?)', ("C-LEGACY", "Legacy customer"))
+            connection.execute(
+                'CREATE TABLE "MainDB__CUST_CON" ('
+                '"Cust ID" TEXT, "Clean" TEXT, "Sticker" TEXT, "Exporter" TEXT, "Com Code" TEXT, '
+                '"Exporter Add" TEXT, "Formula Type" TEXT, "RATE" TEXT, "Charges" TEXT)'
+            )
+            connection.execute(
+                'INSERT INTO "MainDB__CUST_CON" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                ("C-LEGACY", "1", "0", "APC Export", "25345", "Exporter address", "2", "37.5", "150"),
+            )
+            connection.execute(
+                'CREATE TABLE "MainDB__CUST_CONSIGNEE" ('
+                '"Cust ID" TEXT, "Consignee" TEXT, "Con Add" TEXT, "Country" TEXT, "Province" TEXT, '
+                '"Broker" TEXT, "FLIGHT" TEXT, "Time" TEXT, "HC Set2" TEXT)'
+            )
+            connection.execute(
+                'INSERT INTO "MainDB__CUST_CONSIGNEE" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                ("C-LEGACY", "Legacy receiver", "Receiver address", "JP", "Tokyo", "Broker A", "TG682", "10:30", "1"),
+            )
+            connection.execute('CREATE TABLE "MainDB__CUST_NOTE" ("Cust ID" TEXT, "Note Type" TEXT, "Note" TEXT)')
+            connection.commit(); connection.close()
+            before = source.read_bytes()
+
+            explorer = CustomerExplorer(source, data_dir=root / "state")
+            self.assertEqual(1, explorer.backfill_from_snapshot()["accepted"])
+            profile = explorer.profile("C-LEGACY")
+
+            self.assertEqual(
+                {"order_clean": "1", "order_sticker": "0", "exporter": "APC Export", "commercial": "25345",
+                 "hc_exporter_address": "Exporter address", "awb_formula_type": "2", "awb_rate": "37.5", "awb_charges": "150"},
+                {key: profile["export_config"][key] for key in ("order_clean", "order_sticker", "exporter", "commercial", "hc_exporter_address", "awb_formula_type", "awb_rate", "awb_charges")},
+            )
+            self.assertEqual(
+                {"consignee_address": "Receiver address", "broker": "Broker A", "flight": "TG682", "time": "10:30", "hc_set_2": "1"},
+                {key: profile["consignees"][0][key] for key in ("consignee_address", "broker", "flight", "time", "hc_set_2")},
+            )
+            self.assertNotIn("discount", repr(profile).casefold())
+            self.assertNotIn("currency", repr(profile).casefold())
+            self.assertEqual(before, source.read_bytes())
+
     def test_refresh_updates_untouched_source_fields_but_never_core_edits_children_or_archive_tombstone(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
