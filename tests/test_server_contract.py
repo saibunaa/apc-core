@@ -21,6 +21,8 @@ class ServerContractTests(unittest.TestCase):
             'INSERT INTO "MainDB__ITEM" VALUES (?, ?, ?, ?, ?)',
             (item_id, "Item", "สินค้า", "Fish", "Tropical"),
         )
+        connection.execute('CREATE TABLE "MainDB__CUST" ("Cust ID" TEXT, "Name" TEXT)')
+        connection.execute('INSERT INTO "MainDB__CUST" VALUES (?, ?)', ("C-001", "Customer"))
         connection.commit()
         connection.close()
 
@@ -29,6 +31,49 @@ class ServerContractTests(unittest.TestCase):
         self.make_snapshot(source, "IT-001")
         manifest_path = root / "state" / "accepted_snapshot.json"
         return source, manifest_path, certify_snapshot(source, manifest_path, "2026-08-25T13:00:00Z")
+
+    def test_customer_runtime_requires_customer_ready_manifest_and_reconciles_before_serving(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "customer-source.sqlite"
+            self.make_snapshot(source, "IT-001")
+            manifest_path = root / "state" / "accepted_snapshot.json"
+            manifest = certify_snapshot(source, manifest_path, "2026-08-25T13:00:00Z", customer_ready=True)
+
+            from apc_core import server
+            self.assertTrue(hasattr(server, "load_accepted_customer_runtime"))
+            item_explorer, customer_explorer, loaded = server.load_accepted_customer_runtime(manifest_path, data_dir=root / "core-state")
+
+            self.assertEqual(manifest, loaded)
+            self.assertEqual("IT-001", item_explorer.search()["items"][0]["item_id"])
+            self.assertEqual("C-001", customer_explorer.search()["customers"][0]["customer_id"])
+
+    def test_customer_runtime_rejects_forged_customer_ready_metadata_over_wrong_customer_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "wrong-customer-schema.sqlite"
+            connection = sqlite3.connect(source)
+            connection.execute('CREATE TABLE "MainDB__ITEM" ("Item ID" TEXT, "Description" TEXT, "Description TH" TEXT, "Type" TEXT, "Family" TEXT)')
+            connection.execute('INSERT INTO "MainDB__ITEM" VALUES (?, ?, ?, ?, ?)', ("IT-001", "Item", "สินค้า", "Fish", "Tropical"))
+            connection.execute('CREATE TABLE "MainDB__CUST" ("wrong" TEXT)')
+            connection.commit(); connection.close()
+            manifest_path = root / "state" / "accepted_snapshot.json"
+            manifest = certify_snapshot(source, manifest_path, "2026-08-25T13:00:00Z")
+            manifest["customer_ready"] = True
+            manifest["required_customer_columns"] = ["Cust ID", "Name"]
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            from apc_core import server
+            with self.assertRaises(RuntimeContractError):
+                server.load_accepted_customer_runtime(manifest_path, data_dir=root / "core-state")
+
+    def test_customer_runtime_rejects_item_only_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, manifest_path, _ = self.certify(root)
+            from apc_core import server
+            self.assertTrue(hasattr(server, "load_accepted_customer_runtime"))
+            with self.assertRaises(RuntimeContractError):
+                server.load_accepted_customer_runtime(manifest_path, data_dir=root / "core-state")
 
     def test_runtime_uses_only_accepted_artifact_not_caller_source(self):
         with tempfile.TemporaryDirectory() as tmp:

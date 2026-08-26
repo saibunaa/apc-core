@@ -187,6 +187,9 @@ class CustomerExplorer:
             os.close(descriptor)
         if not _table_exists(self._connection, "MainDB__CUST"):
             raise ValueError("customer source lacks MainDB__CUST")
+        customer_columns = {str(row[1]) for row in self._connection.execute('PRAGMA table_info("MainDB__CUST")')}
+        if not {"Cust ID", "Name"}.issubset(customer_columns):
+            raise ValueError("customer source lacks required customer columns")
         self._lock = threading.RLock()
         self._store: CustomerStore | None = None
         self._snapshot_reconciled = False

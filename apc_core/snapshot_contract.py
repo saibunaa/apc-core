@@ -14,6 +14,8 @@ class SnapshotContractError(ValueError):
 
 ITEM_TABLE = "MainDB__ITEM"
 REQUIRED_ITEM_COLUMNS = {"Item ID", "Description", "Description TH", "Type", "Family"}
+CUSTOMER_TABLE = "MainDB__CUST"
+REQUIRED_CUSTOMER_COLUMNS = {"Cust ID", "Name"}
 SCOPE = "read_only_item_explorer"
 
 
@@ -41,7 +43,7 @@ def _open_readonly(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(_readonly_uri(path), uri=True)
 
 
-def _validate_snapshot(path: Path) -> int:
+def _validate_snapshot(path: Path, *, customer_ready: bool = False) -> int:
     try:
         with _open_readonly(path) as connection:
             integrity_row = connection.execute("PRAGMA integrity_check").fetchone()
@@ -50,6 +52,10 @@ def _validate_snapshot(path: Path) -> int:
             columns = {row[1] for row in connection.execute(f'PRAGMA table_info("{ITEM_TABLE}")')}
             if not REQUIRED_ITEM_COLUMNS.issubset(columns):
                 raise SnapshotContractError("required Item table columns are missing")
+            if customer_ready:
+                customer_columns = {row[1] for row in connection.execute(f'PRAGMA table_info("{CUSTOMER_TABLE}")')}
+                if not REQUIRED_CUSTOMER_COLUMNS.issubset(customer_columns):
+                    raise SnapshotContractError("required Customer table columns are missing")
             item_count = connection.execute(f'SELECT COUNT(*) FROM "{ITEM_TABLE}"').fetchone()[0]
     except sqlite3.Error as error:
         raise SnapshotContractError("SQLite snapshot cannot be read") from error
@@ -87,7 +93,7 @@ def _publish_manifest(output_path: Path, manifest: dict) -> None:
         raise
 
 
-def certify_snapshot(source_path: Path, output_path: Path, generated_at: str) -> dict:
+def certify_snapshot(source_path: Path, output_path: Path, generated_at: str, *, customer_ready: bool = False) -> dict:
     """Copy, validate, hash, and atomically accept a local SQLite artifact."""
     source_path = Path(source_path)
     output_path = Path(output_path)
@@ -98,12 +104,12 @@ def certify_snapshot(source_path: Path, output_path: Path, generated_at: str) ->
     except OSError as error:
         raise SnapshotContractError("snapshot source is missing") from error
     try:
-        return certify_snapshot_descriptor(source_descriptor, source_path, output_path, generated_at)
+        return certify_snapshot_descriptor(source_descriptor, source_path, output_path, generated_at, customer_ready=customer_ready)
     finally:
         os.close(source_descriptor)
 
 
-def certify_snapshot_descriptor(source_descriptor: int, source_path: Path, output_path: Path, generated_at: str) -> dict:
+def certify_snapshot_descriptor(source_descriptor: int, source_path: Path, output_path: Path, generated_at: str, *, customer_ready: bool = False) -> dict:
     """Accept a regular source held open by the caller for the full transaction."""
     source_path = Path(source_path)
     output_path = Path(output_path)
@@ -116,7 +122,7 @@ def certify_snapshot_descriptor(source_descriptor: int, source_path: Path, outpu
     state_directory = output_path.parent.resolve()
     temporary_artifact = _copy_descriptor_to_temporary(source_descriptor, state_directory)
     try:
-        item_count = _validate_snapshot(temporary_artifact)
+        item_count = _validate_snapshot(temporary_artifact, customer_ready=customer_ready)
         accepted_hash = _sha256(temporary_artifact)
         accepted_path = state_directory / f"accepted_snapshot-{accepted_hash}.sqlite"
         temporary_artifact.chmod(0o444)
@@ -146,6 +152,9 @@ def certify_snapshot_descriptor(source_descriptor: int, source_path: Path, outpu
         "item_count": item_count,
         "required_item_columns": sorted(REQUIRED_ITEM_COLUMNS),
     }
+    if customer_ready:
+        manifest["customer_ready"] = True
+        manifest["required_customer_columns"] = sorted(REQUIRED_CUSTOMER_COLUMNS)
     try:
         _publish_manifest(output_path, manifest)
     except OSError as error:

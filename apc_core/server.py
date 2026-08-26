@@ -8,6 +8,8 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from .item_explorer import ItemExplorer, make_handler
+from .customer_explorer import CustomerExplorer
+from .snapshot_contract import REQUIRED_CUSTOMER_COLUMNS
 
 
 class RuntimeContractError(ValueError):
@@ -89,6 +91,27 @@ def load_accepted_runtime(manifest_path: Path, *, data_dir: Path | None = None) 
         os.close(descriptor)
 
 
+def load_accepted_customer_runtime(manifest_path: Path, *, data_dir: Path | None = None) -> tuple[ItemExplorer, CustomerExplorer, dict]:
+    """Load one customer-declared artifact and reconcile it once before serving."""
+    descriptor, artifact_path, manifest = _read_accepted_manifest(manifest_path)
+    try:
+        if manifest.get("customer_ready") is not True or manifest.get("required_customer_columns") != sorted(REQUIRED_CUSTOMER_COLUMNS):
+            raise RuntimeContractError("refusing non-customer-ready accepted artifact")
+        item_explorer = ItemExplorer.from_open_descriptor(descriptor, artifact_path, data_dir=data_dir)
+        customer_explorer = CustomerExplorer(artifact_path, data_dir=data_dir)
+        if customer_explorer.reconciliation_status()["source_sha256"] != manifest["accepted_artifact_sha256"]:
+            customer_explorer.close()
+            raise RuntimeContractError("refusing mismatched customer accepted artifact")
+        customer_explorer.backfill_from_snapshot()
+        return item_explorer, customer_explorer, manifest
+    except RuntimeContractError:
+        raise
+    except (OSError, ValueError, sqlite3.Error) as error:
+        raise RuntimeContractError("refusing invalid customer accepted-artifact manifest") from None
+    finally:
+        os.close(descriptor)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Loopback-only APC Core Item Explorer pilot")
     parser.add_argument("--manifest", required=True, type=Path)
@@ -99,8 +122,8 @@ def main() -> None:
     if args.host not in {"127.0.0.1", "::1", "localhost"} and not (args.container_ingress and args.host == "0.0.0.0"):
         parser.error("host must be loopback-only unless explicit container ingress is used")
     data_dir = Path(os.environ["APC_CORE_DATA_DIR"]) if os.environ.get("APC_CORE_DATA_DIR") else None
-    explorer, manifest = load_accepted_runtime(args.manifest, data_dir=data_dir)
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(explorer, manifest))
+    item_explorer, customer_explorer, manifest = load_accepted_customer_runtime(args.manifest, data_dir=data_dir)
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(item_explorer, manifest, customer_explorer, customer_lan_ingress=args.container_ingress))
     print(f"APC Core Item Explorer listening on http://127.0.0.1:{args.port}")
     server.serve_forever()
 
