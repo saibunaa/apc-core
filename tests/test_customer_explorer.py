@@ -298,8 +298,8 @@ class TestCustomerExplorerContract(unittest.TestCase):
                 self.assertEqual(200, response.status)
                 for marker in ("Customer Explorer", "Basic", "Additional", "sticky", "Consignees", "Core-owned", "Order Entry side-panel contract"):
                     self.assertIn(marker, html)
-                self.assertNotIn('<button class="tab">Note - Order</button>', html)
-                self.assertNotIn('<button class="tab">Note - Invoice</button>', html)
+                self.assertIn("Note - Order", html)
+                self.assertIn("Note - Invoice", html)
                 connection = HTTPConnection(host, port, timeout=3)
                 connection.request("GET", "/customers/api/customers?q=pacific")
                 response = connection.getresponse(); body = json.loads(response.read()); connection.close()
@@ -331,10 +331,10 @@ class TestCustomerExplorerContract(unittest.TestCase):
                 connection.request("GET", "/customers/")
                 response = connection.getresponse(); html = response.read().decode("utf-8"); connection.close()
                 self.assertEqual(200, response.status)
-                self.assertIn("[['Basic',basic],['Additional',additional]]", html)
+                self.assertIn("[['Basic',basic],['Additional',additional],['Note - Order',noteOrder],['Note - Invoice',noteInvoice]]", html)
                 self.assertIn("setAttribute('role','tab')", html)
-                self.assertNotIn('<button class="tab">Note - Order</button>', html)
-                self.assertNotIn('<button class="tab">Note - Invoice</button>', html)
+                self.assertIn("Note - Order", html)
+                self.assertIn("Note - Invoice", html)
                 self.assertIn("Order Entry side-panel contract", html)
 
                 connection = HTTPConnection(host, port, timeout=3)
@@ -374,11 +374,12 @@ class TestCustomerExplorerContract(unittest.TestCase):
                 connection.request("GET", "/customers/")
                 response = connection.getresponse(); html = response.read().decode("utf-8"); connection.close()
                 self.assertEqual(200, response.status)
-                self.assertIn("[['Basic',basic],['Additional',additional]]", html)
+                self.assertIn("[['Basic',basic],['Additional',additional],['Note - Order',noteOrder],['Note - Invoice',noteInvoice]]", html)
                 self.assertIn("Manage Order Notes", html)
                 self.assertIn("Manage Invoice Notes", html)
                 self.assertIn("edit ? actions.append(noteActions(c.customer_id))", html)
-                self.assertNotIn('data-tab="note-', html)
+                self.assertIn("function notePanel(", html)
+                self.assertIn("panel.dataset.tab='note-'+kind", html)
                 self.assertNotIn("Order Entry UI", html)
 
                 connection = HTTPConnection(host, port, timeout=3)
@@ -625,7 +626,8 @@ class TestCustomerExplorerContract(unittest.TestCase):
 
     def test_root_customer_card_links_to_customer_explorer(self):
         source = (Path(__file__).resolve().parents[1] / "apc_core" / "item_explorer.py").read_text(encoding="utf-8")
-        self.assertIn('href="/customers/"', source)
+        self.assertIn('href="customers/"', source)
+        self.assertNotIn('href="/customers/"', source)
         self.assertNotIn('Customer Explorer</h2><p>Coming soon.', source)
 
     def test_customer_editor_ui_uses_active_staff_and_real_customer_mutation_paths(self):
@@ -653,7 +655,7 @@ class TestCustomerExplorerContract(unittest.TestCase):
                 response = connection.getresponse(); html = response.read().decode("utf-8"); connection.close()
                 self.assertEqual(200, response.status)
                 self.assertIn("setAttribute('role','tablist')", html)
-                self.assertIn("[['Basic',basic],['Additional',additional]]", html)
+                self.assertIn("[['Basic',basic],['Additional',additional],['Note - Order',noteOrder],['Note - Invoice',noteInvoice]]", html)
                 self.assertIn('id="active-staff"', html)
                 self.assertIn('id="new-customer"', html)
                 for marker in (
@@ -667,7 +669,8 @@ class TestCustomerExplorerContract(unittest.TestCase):
                     "fetch('api/staff')",
                 ):
                     self.assertIn(marker, html)
-                self.assertNotIn('data-tab="note-', html)
+                self.assertIn("function notePanel(", html)
+                self.assertIn("panel.dataset.tab='note-'+kind", html)
                 self.assertNotIn('Order Entry UI', html)
 
                 connection = HTTPConnection(host, port, timeout=3)
@@ -714,7 +717,8 @@ class TestCustomerExplorerContract(unittest.TestCase):
                 ):
                     self.assertIn(marker, html)
                 self.assertNotIn('innerHTML', html)
-                self.assertNotIn('data-tab="note-', html)
+                self.assertIn("function notePanel(", html)
+                self.assertIn("panel.dataset.tab='note-'+kind", html)
                 self.assertNotIn('Order Entry UI', html)
             finally:
                 server.shutdown(); server.server_close()
