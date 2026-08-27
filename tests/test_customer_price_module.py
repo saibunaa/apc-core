@@ -141,7 +141,7 @@ class CustomerPriceModuleContractTests(unittest.TestCase):
             'role="combobox"', 'aria-autocomplete="list"', 'list="customer-options"',
             'id="customer-options"', 'Edit prices', 'Bulk edit', 'role="dialog"',
             'aria-modal="true"', 'header row is optional', 'addEventListener("keydown"',
-            'Escape', 'editMode', 'bulk-dialog', 'commitCustomer', 'e.key==="Tab"', 'lastPage', 'const code=selected()', 'if(selected()===code)render(p)',
+            'Escape', 'editMode', 'bulk-dialog', 'commitCustomer', 'e.key==="Tab"', 'lastPage', 'const code=selected()', 'if(selected()===code)render(p)', '.rows tbody tr:nth-child(even)',
         ):
             self.assertIn(marker, html)
         self.assertNotIn('class="paste', html)
