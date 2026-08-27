@@ -8,6 +8,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from .item_explorer import ItemExplorer, make_handler
+from .recovery import RecoveryAuthorizer, RecoveryService
 from .customer_explorer import CustomerExplorer
 from .customer_price_module import CustomerPriceModule
 from .snapshot_contract import REQUIRED_CUSTOMER_COLUMNS
@@ -141,6 +142,14 @@ def load_accepted_customer_price_runtime(manifest_path: Path, *, data_dir: Path 
         os.close(descriptor)
 
 
+def recovery_test_mode(*, data_dir: Path) -> tuple[RecoveryAuthorizer | None, RecoveryService | None]:
+    """Enable the recovery panel only for an explicitly PIN-configured isolated test process."""
+    pin = os.environ.get("APC_CORE_RECOVERY_TEST_PIN")
+    if pin is None:
+        return None, None
+    return RecoveryAuthorizer.from_test_pin(pin), RecoveryService(data_dir=data_dir)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Loopback-only APC Core Item Explorer pilot")
     parser.add_argument("--manifest", required=True, type=Path)
@@ -150,9 +159,26 @@ def main() -> None:
     args = parser.parse_args()
     if args.host not in {"127.0.0.1", "::1", "localhost"} and not (args.container_ingress and args.host == "0.0.0.0"):
         parser.error("host must be loopback-only unless explicit container ingress is used")
+    if args.container_ingress and os.environ.get("APC_CORE_RECOVERY_TEST_PIN") is not None:
+        parser.error("recovery test mode is loopback-only and forbidden with container ingress")
+    if os.environ.get("APC_CORE_RECOVERY_TEST_PIN") is not None and args.host not in {"127.0.0.1", "::1", "localhost"}:
+        parser.error("recovery test mode is loopback-only")
     data_dir = Path(os.environ["APC_CORE_DATA_DIR"]) if os.environ.get("APC_CORE_DATA_DIR") else None
+    if os.environ.get("APC_CORE_RECOVERY_TEST_PIN") is not None and data_dir is None:
+        parser.error("APC_CORE_DATA_DIR is required for isolated recovery test mode")
+    recovery_authorizer, recovery_service = recovery_test_mode(data_dir=data_dir or Path("."))
     item_explorer, customer_explorer, customer_price_module, manifest = load_accepted_customer_price_runtime(args.manifest, data_dir=data_dir)
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(item_explorer, manifest, customer_explorer, customer_price_module, customer_lan_ingress=args.container_ingress))
+    def close_core_modules_for_recovery() -> None:
+        """Maintenance boundary: no Core SQLite connection survives a generation switch."""
+        customer_price_module.close()
+        customer_explorer.close()
+        item_explorer.close()
+
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(
+        item_explorer, manifest, customer_explorer, customer_price_module, customer_lan_ingress=args.container_ingress,
+        recovery_authorizer=recovery_authorizer, recovery_service=recovery_service,
+        recovery_maintenance=close_core_modules_for_recovery if recovery_service is not None else None,
+    ))
     print(f"APC Core Item Explorer listening on http://127.0.0.1:{args.port}")
     server.serve_forever()
 

@@ -185,6 +185,26 @@ class ServerContractTests(unittest.TestCase):
 
             with self.assertRaises(TypeError):
                 load_accepted_runtime(substituted_source, manifest_path)
+    def test_server_cli_refuses_recovery_test_pin_with_container_ingress(self):
+        import sys
+        from unittest.mock import patch
+        from apc_core import server
+        with patch.dict(os.environ, {"APC_CORE_RECOVERY_TEST_PIN": "123456", "APC_CORE_DATA_DIR": "/tmp/core-test"}):
+            with patch.object(sys, "argv", ["server", "--manifest", "missing.json", "--host", "0.0.0.0", "--container-ingress"]):
+                with self.assertRaises(SystemExit):
+                    server.main()
+
+    def test_recovery_test_mode_is_disabled_without_a_pin_and_local_only_with_an_explicit_pin(self):
+        from unittest.mock import patch
+        from apc_core import server
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.dict(os.environ, {}, clear=True):
+                self.assertEqual((None, None), server.recovery_test_mode(data_dir=root))
+            with patch.dict(os.environ, {"APC_CORE_RECOVERY_TEST_PIN": "123456"}, clear=True):
+                authorizer, service = server.recovery_test_mode(data_dir=root)
+            self.assertTrue(authorizer.is_authorized(authorizer.authenticate(pin="123456", client_id="127.0.0.1")))
+            self.assertEqual([], service.accepted_snapshots())
 
 
 if __name__ == "__main__":
