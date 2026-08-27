@@ -448,7 +448,7 @@ class ItemExplorer:
     def search(self, query: str = "", limit: int = 50, offset: int = 0, *, item_id_prefix: str = "",
                description: str = "", family: str = "", group: str = "", item_type: str = "",
                pack_sequence: str = "") -> dict:
-        limit = max(1, min(int(limit), 100))
+        limit = max(1, min(int(limit), 250))
         offset = max(0, int(offset))
         # Runtime reads operate on Core-owned canonical records.  A newly
         # accepted artifact has no records until its first local read, so
@@ -474,7 +474,7 @@ class ItemExplorer:
                     (not item_type or text("type") == item_type) and (not pack_sequence or text("pack_sequence") == pack_sequence))
         items = [item for item in items if matches(item)]
         items.sort(key=lambda item: str(item["item_id"]))
-        return {"total": len(items), "limit": limit, "offset": offset, **filters, "items": items[offset:offset + limit]}
+        total = len(items); next_offset = offset + limit; return {"total": total, "limit": limit, "offset": offset, "has_more": next_offset < total, "next_offset": next_offset if next_offset < total else None, **filters, "items": items[offset:next_offset]}
 
     def duplicate(self, item_id: str, actor_username: object = None) -> dict[str, object]:
         actor = self._local_store().require_active_actor(actor_username)

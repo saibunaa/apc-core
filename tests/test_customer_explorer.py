@@ -745,6 +745,9 @@ class TestCustomerExplorerContract(unittest.TestCase):
                 self.assertIn("kind=el('span',c.price_type||'—')", html)
                 self.assertIn("event.key==='Tab'", html)
                 self.assertEqual(250, CustomerExplorer.search.__defaults__[1])
+                self.assertIn('"has_more"', Path("apc_core/customer_explorer.py").read_text())
+                self.assertIn('"has_more"', Path("apc_core/item_explorer.py").read_text())
+                self.assertIn('"has_more"', Path("apc_core/customer_price_module.py").read_text())
                 self.assertNotIn('Order Entry UI', html)
 
                 connection = HTTPConnection(host, port, timeout=3)

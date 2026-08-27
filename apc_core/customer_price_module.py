@@ -223,7 +223,7 @@ class CustomerPriceModule:
         customer = self._require_customer(customer_code)
         if type(query) is not str:
             raise ValueError("invalid query")
-        limit = max(1, min(int(limit), 200))
+        limit = max(1, min(int(limit), 250))
         offset = max(0, int(offset))
         term = query.strip().casefold()
         rows = [
@@ -238,7 +238,7 @@ class CustomerPriceModule:
         ]
         if term:
             rows = [row for row in rows if term in row["item_id"].casefold() or term in row["item_description"].casefold()]
-        return {"customer_code": customer, "total": len(rows), "limit": limit, "offset": offset, "rows": rows[offset:offset + limit]}
+        total = len(rows); next_offset = offset + limit; return {"customer_code": customer, "total": total, "limit": limit, "offset": offset, "has_more": next_offset < total, "next_offset": next_offset if next_offset < total else None, "rows": rows[offset:next_offset]}
 
     def edit(self, customer_code: object, item_id: object, price: object, actor_username: object) -> dict[str, object]:
         customer = self._require_customer(customer_code)
