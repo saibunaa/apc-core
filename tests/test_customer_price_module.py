@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 
-class CustomerPriceModuleContractTests(unittest.TestCase):
+class TestCustomerPriceModuleContract(unittest.TestCase):
     def make_snapshot(self, root: Path) -> Path:
         source = root / "accepted-prices.sqlite"
         connection = sqlite3.connect(source)
@@ -141,10 +141,27 @@ class CustomerPriceModuleContractTests(unittest.TestCase):
             'role="combobox"', 'aria-autocomplete="list"', 'list="customer-options"',
             'id="customer-options"', 'Edit prices', 'Bulk edit', 'role="dialog"',
             'aria-modal="true"', 'header row is optional', 'addEventListener("keydown"',
-            'Escape', 'editMode', 'bulk-dialog', 'commitCustomer', 'e.key==="Tab"', 'lastPage', 'const code=selected()', 'if(selected()===code)render(p)', '.rows tbody tr:nth-child(even)',
+            'Escape', 'editMode', 'bulk-dialog', 'commitCustomer', 'e.key==="Tab"', 'lastPage', 'const code=selected()', 'if(selected()===code)render(p,append)', '.rows tbody tr:nth-child(even)',
         ):
             self.assertIn(marker, html)
         self.assertNotIn('class="paste', html)
+
+    def test_customer_price_safety_shell_keeps_errors_in_modal_hides_provenance_and_supports_focus_safe_load_more(self):
+        from apc_core.customer_price_module import CustomerPriceModule
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prices = CustomerPriceModule(self.make_snapshot(Path(tmp)), data_dir=Path(tmp) / "state")
+            html = prices.html()
+
+        for marker in (
+            'id="bulk-error"', 'role="alert"', 'function showBulkError(message)', 'showBulkError(e.message)', 'showBulkError("Choose a user and preview before Apply.")',
+            'id="load-more"', 'Load more', 'function loadMore()', 'lastPage?.next_offset', 'loadingMore', 'loadMoreButton.disabled=true',
+            'function trapFocus(event)', 'focusable[0].focus()', 'focusable.at(-1).focus()',
+        ):
+            self.assertIn(marker, html)
+        self.assertNotIn('Accepted snapshot provenance retained per row', html)
+        self.assertNotIn('<th>Provenance</th>', html)
+        self.assertNotIn('text("td",r.provenance)', html)
 
     def test_tsv_preview_classifies_valid_invalid_unknown_duplicate_and_changes_without_mutating_until_apply(self):
         from apc_core.customer_price_module import CustomerPriceModule
@@ -257,12 +274,24 @@ class CustomerPriceModuleContractTests(unittest.TestCase):
                 items._local_store().connection.commit()
 
                 connection = HTTPConnection(host, port, timeout=3)
-                connection.request("GET", "/customer-prices/api/customers/C-001?q=anub")
+                connection.request("GET", "/customer-prices/api/customers/C-001?limit=1&offset=0")
                 response = connection.getresponse()
                 payload = json.loads(response.read())
                 connection.close()
                 self.assertEqual(200, response.status)
                 self.assertEqual(["IT-001"], [row["item_id"] for row in payload["rows"]])
+                self.assertEqual(2, payload["total"])
+                self.assertTrue(payload["has_more"])
+                self.assertEqual(1, payload["next_offset"])
+
+                connection = HTTPConnection(host, port, timeout=3)
+                connection.request("GET", "/customer-prices/api/customers/C-001?limit=1&offset=1")
+                response = connection.getresponse()
+                second_page = json.loads(response.read())
+                connection.close()
+                self.assertEqual(200, response.status)
+                self.assertEqual(["IT-002"], [row["item_id"] for row in second_page["rows"]])
+                self.assertFalse(second_page["has_more"])
 
                 connection = HTTPConnection(host, port, timeout=3)
                 connection.request(
