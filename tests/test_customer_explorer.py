@@ -739,7 +739,9 @@ class TestCustomerExplorerContract(unittest.TestCase):
                 self.assertIn("customer-name", html)
                 self.assertIn("customer-type", html)
                 self.assertIn("grid-template-columns:72px minmax(0,1fr) 72px", html)
-                self.assertIn("Type '+(c.price_type||'—')", html)
+                self.assertIn("customer-list-header", html)
+                self.assertIn("position:sticky", html)
+                self.assertIn("kind=el('span',c.price_type||'—')", html)
                 self.assertIn("event.key==='Tab'", html)
                 self.assertNotIn('Order Entry UI', html)
 
