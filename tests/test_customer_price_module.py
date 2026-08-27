@@ -163,6 +163,20 @@ class TestCustomerPriceModuleContract(unittest.TestCase):
         self.assertNotIn('<th>Provenance</th>', html)
         self.assertNotIn('text("td",r.provenance)', html)
 
+    def test_customer_price_keyboard_edit_polish_preserves_reverse_tab_save_focus_and_unsaved_guard(self):
+        from apc_core.customer_price_module import CustomerPriceModule
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prices = CustomerPriceModule(self.make_snapshot(Path(tmp)), data_dir=Path(tmp) / "state")
+            html = prices.html()
+
+        for marker in (
+            'e.key==="Tab"&&!e.shiftKey', 'pendingFocusItem', 'requestAnimationFrame',
+            'window.confirm("Discard unsaved price edits?")', 'dirtyEdits=new Set()', 'dirtyEdits.delete(r.item_id)', 'if(!append&&dirtyEdits.size){if(!window.confirm', 'dirtyEdits.clear()', 'encodeURIComponent(r.customer_code)', 'const previousCustomer=lastPage?.customer_code||"";if(dirtyEdits.size){if(!window.confirm("Discard unsaved price edits?")){customer.value=previousCustomer;return}dirtyEdits.clear()}customer.value="";load()',
+            'if(editMode)tr.append(cell)',
+        ):
+            self.assertIn(marker, html)
+
     def test_tsv_preview_classifies_valid_invalid_unknown_duplicate_and_changes_without_mutating_until_apply(self):
         from apc_core.customer_price_module import CustomerPriceModule
 
