@@ -66,7 +66,7 @@ def _rows(connection: sqlite3.Connection, table: str, mapping: dict[str, tuple[s
     result = []
     for source_row in connection.execute(f'SELECT {query} FROM "{table}"'):
         raw = dict(zip(columns, source_row))
-        result.append({field: (display_text(raw.get(column, "")) if field == "price_type" else display_text(raw.get(column, "")).strip()) if column else "" for field, column in selected.items()})
+        result.append({field: display_text(raw.get(column, "")).strip() if column else "" for field, column in selected.items()})
     return result
 
 
@@ -110,10 +110,6 @@ class CustomerStore:
             + customer_columns + ", created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
         )
         self.connection.execute("CREATE TABLE IF NOT EXISTS customer_export_config (customer_id TEXT PRIMARY KEY, core_created INTEGER NOT NULL DEFAULT 0 CHECK(core_created IN (0,1)), archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1)), " + config_columns + ")")
-        customer_names = {row[1] for row in self.connection.execute("PRAGMA table_info(core_customers)")}
-        if "legacy_price_type_raw" not in customer_names:
-            self.connection.execute("ALTER TABLE core_customers ADD COLUMN legacy_price_type_raw TEXT NOT NULL DEFAULT ''")
-            self.connection.execute("UPDATE core_customers SET legacy_price_type_raw=price_type WHERE legacy_price_type_raw='' AND core_created=0")
         config_names = {row[1] for row in self.connection.execute("PRAGMA table_info(customer_export_config)")}
         for field in (*CONFIG_FIELDS, "archived"):
             if field not in config_names:
@@ -137,7 +133,7 @@ class CustomerStore:
         self.shared.close()
 
     def customer(self, customer_id: str) -> dict[str, object] | None:
-        columns = ["customer_id", "source_customer_id", "source_artifact_path", "source_artifact_sha256", "imported_at", "core_created", "archived", *CUSTOMER_FIELDS, "legacy_price_type_raw"]
+        columns = ["customer_id", "source_customer_id", "source_artifact_path", "source_artifact_sha256", "imported_at", "core_created", "archived", *CUSTOMER_FIELDS]
         row = self.connection.execute(f"SELECT {', '.join(columns)} FROM core_customers WHERE customer_id=?", (customer_id,)).fetchone()
         if row is None:
             return None
@@ -301,8 +297,8 @@ class CustomerExplorer:
                     counts["unmatched"] += 1
                     continue
                 if existing is None:
-                    cols = ["customer_id", "source_customer_id", "source_artifact_path", "source_artifact_sha256", "imported_at", "core_created", "archived", *CUSTOMER_FIELDS, "legacy_price_type_raw"]
-                    store.connection.execute("INSERT INTO core_customers(" + ",".join(cols) + ") VALUES (?,?,?,?,CURRENT_TIMESTAMP,0,0," + ",".join("?" for _ in (*CUSTOMER_FIELDS, "legacy_price_type_raw")) + ")", [customer_id, customer_id, str(self.source_path), self._source_sha256, *[row[field] for field in CUSTOMER_FIELDS], row["price_type"]])
+                    cols = ["customer_id", "source_customer_id", "source_artifact_path", "source_artifact_sha256", "imported_at", "core_created", "archived", *CUSTOMER_FIELDS]
+                    store.connection.execute("INSERT INTO core_customers(" + ",".join(cols) + ") VALUES (?,?,?,?,CURRENT_TIMESTAMP,0,0," + ",".join("?" for _ in CUSTOMER_FIELDS) + ")", [customer_id, customer_id, str(self.source_path), self._source_sha256, *[row[field] for field in CUSTOMER_FIELDS]])
                 else:
                     protected = {field for field, in store.connection.execute("SELECT field_name FROM customer_field_provenance WHERE customer_id=?", (customer_id,))}
                     updates = {field: row[field] for field in CUSTOMER_FIELDS if field not in protected and existing[field] != row[field]}
@@ -310,7 +306,7 @@ class CustomerExplorer:
                     if not existing["core_created"]:
                         if updates:
                             store.connection.execute("UPDATE core_customers SET " + ",".join(f"{field}=?" for field in updates) + ",updated_at=CURRENT_TIMESTAMP WHERE customer_id=?", [*updates.values(), customer_id])
-                        store.connection.execute("UPDATE core_customers SET source_artifact_path=?,source_artifact_sha256=?,imported_at=CURRENT_TIMESTAMP,legacy_price_type_raw=? WHERE customer_id=?", (str(self.source_path), self._source_sha256, row["price_type"], customer_id))
+                        store.connection.execute("UPDATE core_customers SET source_artifact_path=?,source_artifact_sha256=?,imported_at=CURRENT_TIMESTAMP WHERE customer_id=?", (str(self.source_path), self._source_sha256, customer_id))
                 self._upsert_source_children(customer_id, configs, consignees, notes, counts)
                 admitted_source_ids.add(customer_id)
                 counts["accepted"] += 1
@@ -377,7 +373,7 @@ class CustomerExplorer:
             raise ValueError("invalid customer create")
         values = {field: str(customer.get(field, "")).strip() for field in CUSTOMER_FIELDS}
         with self._local_store().connection:
-            self._local_store().connection.execute("INSERT INTO core_customers(customer_id,source_customer_id,core_created,archived," + ",".join((*CUSTOMER_FIELDS, "legacy_price_type_raw")) + ") VALUES (?,NULL,1,0," + ",".join("?" for _ in (*CUSTOMER_FIELDS, "legacy_price_type_raw")) + ")", [customer_id, *[values[field] for field in CUSTOMER_FIELDS], ""])
+            self._local_store().connection.execute("INSERT INTO core_customers(customer_id,source_customer_id,core_created,archived," + ",".join(CUSTOMER_FIELDS) + ") VALUES (?,NULL,1,0," + ",".join("?" for _ in CUSTOMER_FIELDS) + ")", [customer_id, *[values[field] for field in CUSTOMER_FIELDS]])
             self._local_store().audit(customer_id, "created", {}, {"created": True}, actor)
         return self._local_store().customer(customer_id) or {}
 
