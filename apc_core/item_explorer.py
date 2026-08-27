@@ -720,6 +720,14 @@ def _customer_explorer_html() -> str:
     html = html.replace("kind=el('span','Type '+(c.price_type||'—'));", "kind=el('span',c.price_type||'—');")
     html = html.replace(".customer-list-header{position:sticky;top:0", ".customer-list-header{position:sticky;top:58px")
     html = html.replace(".drawer{position:fixed", ".radio-group{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:8px}.radio-group label{display:flex;align-items:center;gap:4px;font-size:12px}.radio-group input{appearance:auto;width:16px;height:16px;padding:0;min-width:16px;flex:0;border:initial;border-radius:50%}.drawer{position:fixed")
+    # Staff screens use concise operational status; source evidence remains internal.
+    html = html.replace("Checking reconciliation status…", "Checking data status…")
+    html = html.replace("Customer reads never start reconciliation.", "")
+    html = html.replace("Customer data ready", "Ready")
+    html = html.replace("Reconciliation required", "Data check required")
+    html = html.replace("Customer data matches accepted artifact.", "Customer records are ready.")
+    html = html.replace("Customer data may be stale. Reads will not start reconciliation.", "Customer records need attention.")
+    html = html.replace("Core-owned customer records", "Customer records")
     html = html.replace("staffLoad();", "")
     return _staff_identity_shell(html)
 

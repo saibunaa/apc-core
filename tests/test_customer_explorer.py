@@ -666,7 +666,7 @@ class TestCustomerExplorerContract(unittest.TestCase):
                     self.assertEqual(200, response.status)
                     self.assertIn('id="reconciliation-status"', html)
                     self.assertIn("api/reconciliation-status", html)
-                    self.assertIn("Reconciliation required", html)
+                    self.assertIn("Data check required", html)
                     self.assertNotIn("Reconcile now", html)
             finally:
                 server.shutdown(); server.server_close()
@@ -748,6 +748,8 @@ class TestCustomerExplorerContract(unittest.TestCase):
                 self.assertIn('"has_more"', Path("apc_core/customer_explorer.py").read_text())
                 self.assertIn('"has_more"', Path("apc_core/item_explorer.py").read_text())
                 self.assertIn('"has_more"', Path("apc_core/customer_price_module.py").read_text())
+                self.assertNotIn("Customer data matches accepted artifact.", html)
+                self.assertNotIn("Reconciliation required", html)
                 self.assertNotIn('Order Entry UI', html)
 
                 connection = HTTPConnection(host, port, timeout=3)
