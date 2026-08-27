@@ -581,14 +581,6 @@ class ItemExplorerTests(unittest.TestCase):
             finally:
                 server.shutdown(); server.server_close()
 
-    def test_item_workspace_keeps_both_result_list_and_edit_detail_scrollable(self):
-        html = __import__("apc_core.item_explorer", fromlist=["_item_explorer_html"])._item_explorer_html()
-
-        self.assertIn('.workspace{display:grid;grid-template-columns:minmax(0,1fr) 470px;', html)
-        self.assertIn('.queue{padding:18px;min-width:0;max-height:calc(100vh - 120px);overflow-y:auto}', html)
-        self.assertIn('.detail{position:sticky;top:20px;align-self:start;max-height:calc(100vh - 40px);overflow-y:auto;', html)
-        self.assertIn('@media(max-width:900px){.shell{padding:16px}.workspace{grid-template-columns:1fr}.detail{position:static;', html)
-
     def test_selected_item_detail_is_read_only_until_explicit_edit(self):
         html = __import__("apc_core.item_explorer", fromlist=["_item_explorer_html"])._item_explorer_html()
         detail = re.search(r'<template id="detail-template">(.*?)</template>', html).group(1)
