@@ -751,6 +751,10 @@ def _customer_explorer_html() -> str:
         "function notePanel(customerId,kind){const panel=el('section');panel.className='panel';panel.dataset.tab='note-'+kind;panel.hidden=true;const label=kind==='order'?'Order':'Invoice',rows=kind==='order'?current.order_notes:current.invoice_notes;panel.append(el('h2','Note - '+label),el('p','Core-owned '+label.toLowerCase()+' notes. Changes are attributed to the active staff member.'));rows.forEach(note=>panel.append(renderNote(customerId,note,kind)));panel.append(button('manage-'+kind+'-notes','Manage '+label+' Notes',()=>openNotes(kind),'secondary'),button('add-'+kind+'-note','Add '+label+' note',async()=>{const body=prompt('Note body');if(body===null)return;try{await post(notePath(customerId),{kind,body,actor:activeStaff()});say(label+' note saved.');open(customerId)}catch(e){say(e.message)}},'secondary'));return panel}function openNotes(kind){",
     )
     html = html.replace(
+        "basic.append(grid);const cfg=",
+        "const priceTypeProvenance=el('p','Imported source Price Type: '+(c.legacy_price_type_raw||'No imported source Price Type'));priceTypeProvenance.className='meta';basic.append(grid,priceTypeProvenance);const cfg=",
+    )
+    html = html.replace(
         "profile.append(tabs(basic,additional),basic,additional);profile.focus()",
         "const noteOrder=notePanel(c.customer_id,'order'),noteInvoice=notePanel(c.customer_id,'invoice');profile.append(tabs(basic,additional,noteOrder,noteInvoice),basic,additional,noteOrder,noteInvoice);profile.focus()",
     )

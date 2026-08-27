@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from apc_core.customer_explorer import CustomerExplorer
+from apc_core.item_explorer import _customer_explorer_html
 
 
 class TestCustomerExplorerContract(unittest.TestCase):
@@ -948,3 +949,11 @@ class TestCustomerExplorerContract(unittest.TestCase):
 
         self.assertEqual("1.20", customer["price_type"])
         self.assertEqual("", customer["legacy_price_type_raw"])
+
+    def test_customer_shell_renders_source_price_type_provenance_read_only(self):
+        html = _customer_explorer_html()
+
+        self.assertIn("Imported source Price Type", html)
+        self.assertIn("c.legacy_price_type_raw", html)
+        self.assertIn("No imported source Price Type", html)
+        self.assertNotIn("'legacy_price_type_raw'", html)
