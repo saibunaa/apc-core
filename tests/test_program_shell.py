@@ -43,6 +43,8 @@ class ProgramShellTests(unittest.TestCase):
         self.assertTrue(all(html.count('const key="apc-core-identity"') == 1 for html in pages))
         self.assertTrue(all(html.count('Change user') == 1 for html in pages))
         self.assertTrue(all('class="identity-card"' in html for html in pages))
+        self.assertTrue(all('apc-core-known-user' in html for html in pages))
+        self.assertTrue(all('localStorage.getItem("apc-core-identity")' in html for html in pages))
         item_html = _item_explorer_html()
         self.assertNotIn("$('#change-user')", item_html)
         self.assertNotIn("$('#change-user').onclick", item_html)
@@ -100,6 +102,8 @@ class ProgramShellTests(unittest.TestCase):
                 server.server_close()
 
         item_html, customer_html = _item_explorer_html(), _customer_explorer_html()
+        self.assertIn("--list-alt:#f1ede4", item_html)
+        self.assertIn("--list-alt:#f1ede4", customer_html)
         self.assertIn("actor=window.apcCoreActiveStaff", item_html)
         self.assertIn("function activeStaff(){return window.apcCoreActiveStaff||''}", customer_html)
         for html in (item_html, customer_html):

@@ -332,12 +332,12 @@ class CustomerExplorer:
     def refresh_from_snapshot(self) -> dict[str, int]:
         return self.backfill_from_snapshot()
 
-    def search(self, query: str = "", limit: int = 50, offset: int = 0) -> dict[str, object]:
-        limit = max(1, min(int(limit), 100)); offset = max(0, int(offset)); term = (query or "").strip().casefold()
+    def search(self, query: str = "", limit: int = 250, offset: int = 0) -> dict[str, object]:
+        limit = max(1, min(int(limit), 250)); offset = max(0, int(offset)); term = (query or "").strip().casefold()
         customers = self._local_store().visible_customers()
         if term:
             customers = [row for row in customers if any(term in str(row.get(field, "")).casefold() for field in ("customer_id", "name", "address_1", "tel", "email", "price_type", "box_type"))]
-        return {"total": len(customers), "limit": limit, "offset": offset, "customers": customers[offset:offset + limit]}
+        total = len(customers); next_offset = offset + limit; return {"total": total, "limit": limit, "offset": offset, "has_more": next_offset < total, "next_offset": next_offset if next_offset < total else None, "customers": customers[offset:next_offset]}
 
     def active_staff(self) -> list[dict[str, str]]:
         """Read-only Core staff identity for mutation attribution selection."""

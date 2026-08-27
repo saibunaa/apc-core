@@ -23,6 +23,8 @@ class ServerContractTests(unittest.TestCase):
         )
         connection.execute('CREATE TABLE "MainDB__CUST" ("Cust ID" TEXT, "Name" TEXT)')
         connection.execute('INSERT INTO "MainDB__CUST" VALUES (?, ?)', ("C-001", "Customer"))
+        connection.execute('CREATE TABLE "MainDB__CUST_PRC" ("Cust ID" TEXT, "Item ID" TEXT, "Price" TEXT)')
+        connection.execute('INSERT INTO "MainDB__CUST_PRC" VALUES (?, ?, ?)', ("C-001", item_id, "12"))
         connection.commit()
         connection.close()
 
@@ -47,6 +49,23 @@ class ServerContractTests(unittest.TestCase):
             self.assertEqual(manifest, loaded)
             self.assertEqual("IT-001", item_explorer.search()["items"][0]["item_id"])
             self.assertEqual("C-001", customer_explorer.search()["customers"][0]["customer_id"])
+
+    def test_customer_price_runtime_uses_the_validated_accepted_descriptor_and_imports_only_snapshot_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "price-source.sqlite"
+            self.make_snapshot(source, "IT-001")
+            manifest_path = root / "state" / "accepted_snapshot.json"
+            manifest = certify_snapshot(source, manifest_path, "2026-08-25T13:00:00Z", customer_ready=True)
+
+            from apc_core import server
+            self.assertTrue(hasattr(server, "load_accepted_customer_price_runtime"))
+            items, customers, prices, loaded = server.load_accepted_customer_price_runtime(manifest_path, data_dir=root / "core-state")
+
+            self.assertEqual(manifest, loaded)
+            self.assertEqual("IT-001", items.search()["items"][0]["item_id"])
+            self.assertEqual("C-001", customers.search()["customers"][0]["customer_id"])
+            self.assertEqual("12", prices.search("C-001")["rows"][0]["price"])
 
     def test_customer_runtime_rejects_forged_customer_ready_metadata_over_wrong_customer_schema(self):
         with tempfile.TemporaryDirectory() as tmp:
