@@ -24,6 +24,7 @@ def _snapshot(*, usd: str = "33.35", sgd: str = "25.60"):
         usd=BangkokBankFetchedRate("USD: 50-100", "TT Buying", usd, usd),
         sgd=BangkokBankFetchedRate("SGD", "TT Buying", sgd, sgd),
         usd_to_sgd=str(float(usd) / float(sgd)),
+        source_document_sha256="a" * 64,
     )
 
 
@@ -46,6 +47,27 @@ class BangkokBankRateArchiveTests(unittest.TestCase):
         self.assertEqual("25.60", stored.sgd_thb_per_unit)
         self.assertEqual(1, len(records))
         self.assertEqual(stored, records[0])
+
+    def test_retains_lossless_raw_source_provenance_with_the_archive_record(self):
+        from apc_core.bangkok_bank_rate_archive import BangkokBankRateArchive
+
+        snapshot = _snapshot()
+        with TemporaryDirectory() as temporary_directory:
+            archive = BangkokBankRateArchive(Path(temporary_directory) / "rates.sqlite")
+            archived = archive.store(snapshot, update_slot=1)
+            raw_corrected = archive.store(replace(snapshot, usd=replace(snapshot.usd, raw_value="33.350")), update_slot=1)
+
+        self.assertEqual("https://www.bangkokbank.com/en/personal/other-services/view-rates/foreign-exchange-rates", archived.source_url)
+        self.assertEqual("Currency", archived.currency_column_label)
+        self.assertEqual("TT Buying", archived.tt_buying_column_label)
+        self.assertEqual("USD: 50-100", archived.usd_currency_label)
+        self.assertEqual("33.35", archived.usd_raw_value)
+        self.assertEqual("SGD", archived.sgd_currency_label)
+        self.assertEqual("25.60", archived.sgd_raw_value)
+        self.assertEqual("a" * 64, archived.source_document_sha256)
+        self.assertTrue(archived.source_evidence_sha256)
+        self.assertEqual("33.350", raw_corrected.usd_raw_value)
+        self.assertNotEqual(archived.content_sha256, raw_corrected.content_sha256)
 
     def test_exact_repeat_is_idempotent_but_corrected_same_slot_is_retained(self):
         from apc_core.bangkok_bank_rate_archive import BangkokBankRateArchive
