@@ -19,8 +19,11 @@ CUSTOMER_FIELDS = (
     "name", "address_1", "address_2", "address_3", "tel", "fax", "email",
     "price_type", "box_type", "invoice_header", "invoice_type", "invoice_year",
 )
-CONFIG_FIELDS = ("exporter", "commercial", "order_settings", "hc_settings", "awb_configuration")
-CONSIGNEE_FIELDS = ("consignee", "country", "province", "broker", "flight")
+CONFIG_FIELDS = (
+    "exporter", "commercial", "order_settings", "hc_settings", "awb_configuration",
+    "order_clean", "order_sticker", "hc_exporter_address", "awb_formula_type", "awb_rate", "awb_charges",
+)
+CONSIGNEE_FIELDS = ("consignee", "consignee_address", "country", "province", "broker", "flight", "time", "hc_set_2")
 
 _CUSTOMER_COLUMNS = {
     "customer_id": ("Cust ID", "Customer ID"), "name": ("Name",),
@@ -34,10 +37,13 @@ _CONFIG_COLUMNS = {
     "customer_id": ("Cust ID", "Customer ID"), "exporter": ("Exporter",), "commercial": ("Commercial", "Com Code"),
     "order_settings": ("Order Settings", "Order"), "hc_settings": ("HC Settings", "HC"),
     "awb_configuration": ("AWB Configuration", "AWB"),
+    "order_clean": ("Clean",), "order_sticker": ("Sticker",), "hc_exporter_address": ("Exporter Add",),
+    "awb_formula_type": ("Formula Type",), "awb_rate": ("RATE", "Rate"), "awb_charges": ("Charges",),
 }
 _CONSIGNEE_COLUMNS = {
-    "customer_id": ("Cust ID", "Customer ID"), "consignee": ("Consignee",), "country": ("Country",),
-    "province": ("Province",), "broker": ("Broker",), "flight": ("Flight",),
+    "customer_id": ("Cust ID", "Customer ID"), "consignee": ("Consignee",), "consignee_address": ("Con Add", "Consignee Address"),
+    "country": ("Country",), "province": ("Province",), "broker": ("Broker",), "flight": ("Flight",),
+    "time": ("Time",), "hc_set_2": ("HC Set2", "HC Set 2"),
 }
 _NOTE_COLUMNS = {"customer_id": ("Cust ID", "Customer ID"), "note_type": ("Note Type", "Type"), "body": ("Note", "Body")}
 
@@ -105,9 +111,14 @@ class CustomerStore:
         )
         self.connection.execute("CREATE TABLE IF NOT EXISTS customer_export_config (customer_id TEXT PRIMARY KEY, core_created INTEGER NOT NULL DEFAULT 0 CHECK(core_created IN (0,1)), archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1)), " + config_columns + ")")
         config_names = {row[1] for row in self.connection.execute("PRAGMA table_info(customer_export_config)")}
-        if "archived" not in config_names:
-            self.connection.execute("ALTER TABLE customer_export_config ADD COLUMN archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1))")
+        for field in (*CONFIG_FIELDS, "archived"):
+            if field not in config_names:
+                self.connection.execute(f"ALTER TABLE customer_export_config ADD COLUMN {field} " + ("INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1))" if field == "archived" else "TEXT NOT NULL DEFAULT ''"))
         self.connection.execute("CREATE TABLE IF NOT EXISTS customer_consignees (id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id TEXT NOT NULL, source_key TEXT, core_created INTEGER NOT NULL DEFAULT 0 CHECK(core_created IN (0,1)), archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1)), " + consignee_columns + ", UNIQUE(customer_id, source_key))")
+        consignee_names = {row[1] for row in self.connection.execute("PRAGMA table_info(customer_consignees)")}
+        for field in CONSIGNEE_FIELDS:
+            if field not in consignee_names:
+                self.connection.execute(f"ALTER TABLE customer_consignees ADD COLUMN {field} TEXT NOT NULL DEFAULT ''")
         self.connection.execute("CREATE TABLE IF NOT EXISTS customer_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id TEXT NOT NULL, note_kind TEXT NOT NULL CHECK(note_kind IN ('order','invoice')), source_key TEXT, core_created INTEGER NOT NULL DEFAULT 0 CHECK(core_created IN (0,1)), archived INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1)), body TEXT NOT NULL, UNIQUE(customer_id, source_key))")
         self.connection.execute("CREATE TABLE IF NOT EXISTS customer_field_provenance (customer_id TEXT NOT NULL, field_name TEXT NOT NULL, PRIMARY KEY(customer_id, field_name))")
         self.connection.execute("CREATE TABLE IF NOT EXISTS customer_quarantine (id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id TEXT NOT NULL, reason TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
@@ -176,6 +187,9 @@ class CustomerExplorer:
             os.close(descriptor)
         if not _table_exists(self._connection, "MainDB__CUST"):
             raise ValueError("customer source lacks MainDB__CUST")
+        customer_columns = {str(row[1]) for row in self._connection.execute('PRAGMA table_info("MainDB__CUST")')}
+        if not {"Cust ID", "Name"}.issubset(customer_columns):
+            raise ValueError("customer source lacks required customer columns")
         self._lock = threading.RLock()
         self._store: CustomerStore | None = None
         self._snapshot_reconciled = False
