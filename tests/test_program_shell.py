@@ -102,6 +102,8 @@ class ProgramShellTests(unittest.TestCase):
                 server.server_close()
 
         item_html, customer_html = _item_explorer_html(), _customer_explorer_html()
+        self.assertIn("--list-alt:#f1ede4", item_html)
+        self.assertIn("--list-alt:#f1ede4", customer_html)
         self.assertIn("actor=window.apcCoreActiveStaff", item_html)
         self.assertIn("function activeStaff(){return window.apcCoreActiveStaff||''}", customer_html)
         for html in (item_html, customer_html):

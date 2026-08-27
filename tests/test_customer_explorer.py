@@ -729,6 +729,7 @@ class TestCustomerExplorerContract(unittest.TestCase):
                 self.assertIn("event.key==='Tab'", html)
                 self.assertIn("document.activeElement===last", html)
                 self.assertIn("commitCustomerCode", html)
+                self.assertIn("await load()", html)
                 self.assertIn("event.key==='Tab'", html)
                 self.assertNotIn('Order Entry UI', html)
 
