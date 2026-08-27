@@ -719,7 +719,7 @@ def _customer_explorer_html() -> str:
     html = html.replace(".customer{display:grid;grid-template-columns:72px minmax(0,1fr) 72px;", ".customer-list-header,.customer{display:grid;grid-template-columns:72px minmax(0,1fr) 72px;gap:10px;align-items:center}.customer-list-header{position:sticky;top:0;z-index:1;padding:7px 9px;background:var(--paper);border-bottom:1px solid var(--line);font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase}.customer{")
     html = html.replace("kind=el('span','Type '+(c.price_type||'—'));", "kind=el('span',c.price_type||'—');")
     html = html.replace(".customer-list-header{position:sticky;top:0", ".customer-list-header{position:sticky;top:58px")
-    html = html.replace(".drawer{position:fixed", ".radio-group{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:8px}.radio-group label{display:flex;align-items:center;gap:4px;font-size:12px}.radio-group input{min-width:0;flex:0}.drawer{position:fixed")
+    html = html.replace(".drawer{position:fixed", ".radio-group{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:8px}.radio-group label{display:flex;align-items:center;gap:4px;font-size:12px}.radio-group input{appearance:auto;width:16px;height:16px;padding:0;min-width:16px;flex:0;border:initial;border-radius:50%}.drawer{position:fixed")
     html = html.replace("staffLoad();", "")
     return _staff_identity_shell(html)
 
