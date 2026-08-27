@@ -703,8 +703,10 @@ class TestCustomerExplorerContract(unittest.TestCase):
                 self.assertEqual(200, response.status)
                 self.assertIn("setAttribute('role','tablist')", html)
                 self.assertIn("[['Basic',basic],['Additional',additional],['Note - Order',noteOrder],['Note - Invoice',noteInvoice]]", html)
-                self.assertIn('id="active-staff"', html)
+                self.assertNotIn('id="active-staff"', html)
+                self.assertIn("function activeStaff(){return window.apcCoreActiveStaff||''}", html)
                 self.assertIn('id="new-customer"', html)
+                self.assertIn('>Add customer<', html)
                 for marker in (
                     "button('edit-customer'", "button('save-customer'", "button('archive-customer'", "button('cancel-customer'",
                     'id="note-manager"', 'Manage customer notes', 'aria-live="polite"',
@@ -713,7 +715,7 @@ class TestCustomerExplorerContract(unittest.TestCase):
                     "api/customers/'+encodeURIComponent(id)+'/consignees",
                     "api/customers/'+encodeURIComponent(id)+'/notes",
                     "actor:activeStaff()",
-                    "fetch('api/staff')",
+                    'fetch("api/staff")',
                 ):
                     self.assertIn(marker, html)
                 self.assertIn("function notePanel(", html)
