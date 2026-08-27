@@ -744,6 +744,7 @@ class TestCustomerExplorerContract(unittest.TestCase):
                 self.assertIn("appearance:auto;width:16px;height:16px;padding:0", html)
                 self.assertIn("kind=el('span',c.price_type||'—')", html)
                 self.assertIn("event.key==='Tab'", html)
+                self.assertEqual(250, CustomerExplorer.search.__defaults__[1])
                 self.assertNotIn('Order Entry UI', html)
 
                 connection = HTTPConnection(host, port, timeout=3)

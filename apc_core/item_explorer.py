@@ -810,7 +810,7 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                         self._send_json(HTTPStatus.OK, customer_explorer.profile(unquote(suffix)))
                     else:
                         query = parse_qs(parsed.query)
-                        self._send_json(HTTPStatus.OK, customer_explorer.search(query.get("q", [""])[0], query.get("limit", [50])[0], query.get("offset", [0])[0]))
+                        self._send_json(HTTPStatus.OK, customer_explorer.search(query.get("q", [""])[0], query.get("limit", [250])[0], query.get("offset", [0])[0]))
                 except (ValueError, sqlite3.Error):
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid customer query"})
                 return
