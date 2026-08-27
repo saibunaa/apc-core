@@ -795,7 +795,8 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
             if customer_price_module is not None and parsed.path.startswith("/customer-prices/api/customers/"):
                 try:
                     suffix = parsed.path.removeprefix("/customer-prices/api/customers/")
-                    self._send_json(HTTPStatus.OK, customer_price_module.search(unquote(suffix), parse_qs(parsed.query).get("q", [""])[0]))
+                    query = parse_qs(parsed.query)
+                    self._send_json(HTTPStatus.OK, customer_price_module.search(unquote(suffix), query.get("q", [""])[0], query.get("limit", [100])[0], query.get("offset", [0])[0]))
                 except (ValueError, sqlite3.Error):
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid customer price query"})
                 return
