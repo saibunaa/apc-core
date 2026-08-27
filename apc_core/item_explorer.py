@@ -755,14 +755,6 @@ def _customer_explorer_html() -> str:
         "const priceTypeProvenance=el('p','Imported source Price Type: '+(c.legacy_price_type_raw||'No imported source Price Type'));priceTypeProvenance.className='meta';basic.append(grid,priceTypeProvenance);const cfg=",
     )
     html = html.replace(
-        "function noteActions(customerId){",
-        "function ratePreview(){const panel=el('section');panel.className='child';const date=el('input'),slot=el('input'),result=el('p','Choose a publication date and update slot.');date.type='date';date.setAttribute('aria-label','Bangkok Bank publication date');slot.type='number';slot.min='1';slot.max='1440';slot.step='1';slot.setAttribute('aria-label','Bangkok Bank update slot');async function preview(){try{const updateSlot=Number(slot.value);if(!/^\\d{4}-\\d{2}-\\d{2}$/.test(date.value)||!Number.isInteger(updateSlot)||updateSlot<1||updateSlot>1440)throw Error();const r=await fetch('api/rates/bangkok-bank?date='+encodeURIComponent(date.value)+'&update_slot='+encodeURIComponent(updateSlot),{cache:'no-store'});if(!r.ok)throw Error();const d=await r.json();result.textContent='Selected '+d.date+' · update '+d.update_slot+' · USD50 TT Buying '+d.rates.usd.thb_per_unit+' THB · SGD TT Buying '+d.rates.sgd.thb_per_unit+' THB · USD→SGD '+d.rates.usd_to_sgd}catch(e){result.textContent='Rate preview unavailable. Check the selected date and slot or the approved rate service.'}}panel.append(el('h2','Preview Bangkok Bank rate'),el('p','No rate selection is saved to the customer.'),date,slot,button('preview-bangkok-rate','Preview rate',preview,'secondary'),result);return panel}function noteActions(customerId){",
-    )
-    html = html.replace(
-        "additional.append(cons);profile.append(tabs",
-        "additional.append(cons,ratePreview());profile.append(tabs",
-    )
-    html = html.replace(
         "profile.append(tabs(basic,additional),basic,additional);profile.focus()",
         "const noteOrder=notePanel(c.customer_id,'order'),noteInvoice=notePanel(c.customer_id,'invoice');profile.append(tabs(basic,additional,noteOrder,noteInvoice),basic,additional,noteOrder,noteInvoice);profile.focus()",
     )

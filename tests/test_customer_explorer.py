@@ -957,13 +957,3 @@ class TestCustomerExplorerContract(unittest.TestCase):
         self.assertIn("c.legacy_price_type_raw", html)
         self.assertIn("No imported source Price Type", html)
         self.assertNotIn("'legacy_price_type_raw'", html)
-
-    def test_customer_shell_has_a_relative_bangkok_rate_preview_with_no_persisted_selection(self):
-        html = _customer_explorer_html()
-
-        self.assertIn("Preview Bangkok Bank rate", html)
-        self.assertIn("api/rates/bangkok-bank?date=", html)
-        self.assertIn("date.type='date'", html)
-        self.assertIn("updateSlot>1440", html)
-        self.assertIn("No rate selection is saved to the customer", html)
-        self.assertNotIn("source_url", html)
