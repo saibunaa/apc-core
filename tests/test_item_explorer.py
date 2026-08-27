@@ -1,4 +1,5 @@
 import json
+import re
 import sqlite3
 import tempfile
 import threading
@@ -579,6 +580,57 @@ class ItemExplorerTests(unittest.TestCase):
                 self.assertEqual(2, explorer.search()["total"])
             finally:
                 server.shutdown(); server.server_close()
+
+    def test_selected_item_detail_is_read_only_until_explicit_edit(self):
+        html = __import__("apc_core.item_explorer", fromlist=["_item_explorer_html"])._item_explorer_html()
+        detail = re.search(r'<template id="detail-template">(.*?)</template>', html).group(1)
+        edit = re.search(r'<template id="edit-template">(.*?)</template>', html).group(1)
+
+        self.assertIn('data-edit-item', detail)
+        self.assertIn('>Edit<', detail)
+        self.assertNotIn('<form', detail)
+        self.assertNotIn('<input', detail)
+        self.assertNotIn('Save changes', detail)
+        self.assertNotIn('>Cancel<', detail)
+        self.assertIn('<form class="edit-form">', edit)
+        self.assertIn('Save changes', edit)
+        self.assertIn('data-cancel', edit)
+        self.assertIn('function select(item){current=item;renderDetail(item)}', html)
+        self.assertIn("querySelector('[data-edit-item]').onclick=()=>renderEdit(current)", html)
+
+    def test_cancel_restores_latest_selected_detail_without_another_request(self):
+        html = __import__("apc_core.item_explorer", fromlist=["_item_explorer_html"])._item_explorer_html()
+
+        self.assertIn("form.querySelector('[data-cancel]').onclick=()=>current&&current.core_created&&!current.item_id?renderEmptyDetail():renderDetail(current)", html)
+        self.assertIn("current=(await response.json()).item;status.textContent='Saved locally.';await load();renderDetail(current)", html)
+
+    def test_edit_save_keeps_actor_guard_and_existing_form_submission_boundary(self):
+        html = __import__("apc_core.item_explorer", fromlist=["_item_explorer_html"])._item_explorer_html()
+
+        self.assertIn('const selectedActor=requireActor();if(!selectedActor)return;const changes=Object.fromEntries(new FormData(form));changes.actor=selectedActor;', html)
+        self.assertIn("fetch(creating?'api/items':'api/items/'+encodeURIComponent(current.item_id)", html)
+
+    def test_apc_group_radios_are_native_semantic_horizontal_fieldset(self):
+        html = __import__("apc_core.item_explorer", fromlist=["_item_explorer_html"])._item_explorer_html()
+        group = re.search(r'<fieldset class="apc-group-row">(.*?)</fieldset>', html).group(1)
+
+        self.assertIn('<legend>APC Group</legend>', group)
+        self.assertIn('class="radio-group"', group)
+        self.assertIn('.radio-group{display:flex;', html)
+        for value in ('A', 'B', ''):
+            self.assertIn(f'name="apc_group" type="radio" value="{value}"', group)
+        self.assertNotIn('role="radio"', group)
+        self.assertNotIn('tabindex=', group)
+
+    def test_add_item_button_requires_shared_actor_opens_new_draft_and_cancels_without_mutation(self):
+        html = __import__("apc_core.item_explorer", fromlist=["_item_explorer_html"])._item_explorer_html()
+
+        self.assertIn('<button id="add-item" type="button">Add item</button>', html)
+        self.assertIn("$('#add-item').onclick=()=>{if(!requireActor())return;const proposal={item_id:'',core_created:true,source_label:'Core-created'};current=proposal;renderEdit(proposal)}", html)
+        self.assertIn("if(item.core_created&&!item.item_id){const idControl=form.elements.namedItem('item_id');idControl.readOnly=false;idControl.classList.remove('locked');", html)
+        self.assertIn("form.querySelector('[data-cancel]').onclick=()=>current&&current.core_created&&!current.item_id?renderEmptyDetail():renderDetail(current)", html)
+        self.assertIn("function renderEmptyDetail(){current=null;$('#detail').innerHTML='<p class=\"status\">Select an item to edit it locally.</p>'}", html)
+        self.assertIn("fetch(creating?'api/items':'api/items/'+encodeURIComponent(current.item_id)", html)
 
 
 if __name__ == "__main__":
