@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .item_explorer import ItemExplorer, make_handler
 from .customer_explorer import CustomerExplorer
+from .customer_price_module import CustomerPriceModule
 from .snapshot_contract import REQUIRED_CUSTOMER_COLUMNS
 
 
@@ -112,6 +113,34 @@ def load_accepted_customer_runtime(manifest_path: Path, *, data_dir: Path | None
         os.close(descriptor)
 
 
+def load_accepted_customer_price_runtime(manifest_path: Path, *, data_dir: Path | None = None) -> tuple[ItemExplorer, CustomerExplorer, CustomerPriceModule, dict]:
+    """Build customer pricing only from one verified accepted snapshot descriptor."""
+    descriptor, artifact_path, manifest = _read_accepted_manifest(manifest_path)
+    item_explorer = customer_explorer = price_module = None
+    try:
+        if manifest.get("customer_ready") is not True or manifest.get("required_customer_columns") != sorted(REQUIRED_CUSTOMER_COLUMNS):
+            raise RuntimeContractError("refusing non-customer-ready accepted artifact")
+        item_explorer = ItemExplorer.from_open_descriptor(descriptor, artifact_path, data_dir=data_dir)
+        customer_explorer = CustomerExplorer(artifact_path, data_dir=data_dir)
+        if customer_explorer.reconciliation_status()["source_sha256"] != manifest["accepted_artifact_sha256"]:
+            raise RuntimeContractError("refusing mismatched customer accepted artifact")
+        customer_explorer.backfill_from_snapshot()
+        price_module = CustomerPriceModule.from_open_descriptor(descriptor, artifact_path, data_dir=data_dir)
+        price_module.import_from_snapshot()
+        return item_explorer, customer_explorer, price_module, manifest
+    except RuntimeContractError:
+        raise
+    except (OSError, ValueError, sqlite3.Error) as error:
+        raise RuntimeContractError("refusing invalid customer-price accepted artifact") from None
+    finally:
+        if price_module is None:
+            if customer_explorer is not None:
+                customer_explorer.close()
+            if item_explorer is not None:
+                item_explorer.close()
+        os.close(descriptor)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Loopback-only APC Core Item Explorer pilot")
     parser.add_argument("--manifest", required=True, type=Path)
@@ -122,8 +151,8 @@ def main() -> None:
     if args.host not in {"127.0.0.1", "::1", "localhost"} and not (args.container_ingress and args.host == "0.0.0.0"):
         parser.error("host must be loopback-only unless explicit container ingress is used")
     data_dir = Path(os.environ["APC_CORE_DATA_DIR"]) if os.environ.get("APC_CORE_DATA_DIR") else None
-    item_explorer, customer_explorer, manifest = load_accepted_customer_runtime(args.manifest, data_dir=data_dir)
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(item_explorer, manifest, customer_explorer, customer_lan_ingress=args.container_ingress))
+    item_explorer, customer_explorer, customer_price_module, manifest = load_accepted_customer_price_runtime(args.manifest, data_dir=data_dir)
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(item_explorer, manifest, customer_explorer, customer_price_module, customer_lan_ingress=args.container_ingress))
     print(f"APC Core Item Explorer listening on http://127.0.0.1:{args.port}")
     server.serve_forever()
 

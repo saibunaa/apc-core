@@ -647,7 +647,7 @@ def _staff_identity_shell(html: str) -> str:
 
 
 def _menu_html_body() -> str:
-    return """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>APC Core</title><style>:root{--ink:#202124;--muted:#6e737b;--line:#e6e6e8;--canvas:#f5f5f7;--paper:#fff;--blue:#0071e3}*{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--ink);font:15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.shell{max-width:900px;margin:auto;padding:56px 24px}.brand{font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--blue);margin-bottom:18px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.card{min-height:156px;border:1px solid var(--line);border-radius:20px;background:var(--paper);padding:22px;text-decoration:none;color:inherit;display:flex;flex-direction:column;justify-content:space-between}.card h2{font-size:21px;margin:0}.card:hover,.card:focus-visible{border-color:#a9cfee;box-shadow:0 10px 24px rgba(0,113,227,.12);transform:translateY(-2px);transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease}.card p{color:var(--muted)}.open{font-weight:600;color:var(--blue)}.soon{opacity:.72}.label{font-size:12px}@media(max-width:620px){.grid{grid-template-columns:1fr}}</style><body><main class="shell"><div class="brand">APC Core</div><section class="grid" aria-label="APC Core modules"><a class="card" href="items/"><div><h2>Items</h2><p>Search and inspect the item catalogue.</p></div><span class="open">Open Item Explorer →</span></a><div class="card soon"><div><h2>Orders</h2><p>Order work will appear here.</p></div><span class="label">Coming soon</span></div><a class="card" href="customers/"><div><h2>Customers</h2><p>Search and inspect Core-owned customer records.</p></div><span class="open">Open Customer Explorer →</span></a><div class="card soon"><div><h2>Shipments</h2><p>Shipment tracking will appear here.</p></div><span class="label">Coming soon</span></div><div class="card soon"><div><h2>Activity</h2><p>Shared activity will appear here.</p></div><span class="label">Coming soon</span></div></section></main></body></html>"""
+    return """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>APC Core</title><style>:root{--ink:#202124;--muted:#6e737b;--line:#e6e6e8;--canvas:#f5f5f7;--paper:#fff;--blue:#0071e3}*{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--ink);font:15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.shell{max-width:900px;margin:auto;padding:56px 24px}.brand{font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--blue);margin-bottom:18px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.card{min-height:156px;border:1px solid var(--line);border-radius:20px;background:var(--paper);padding:22px;text-decoration:none;color:inherit;display:flex;flex-direction:column;justify-content:space-between}.card h2{font-size:21px;margin:0}.card:hover,.card:focus-visible{border-color:#a9cfee;box-shadow:0 10px 24px rgba(0,113,227,.12);transform:translateY(-2px);transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease}.card p{color:var(--muted)}.open{font-weight:600;color:var(--blue)}.soon{opacity:.72}.label{font-size:12px}@media(max-width:620px){.grid{grid-template-columns:1fr}}</style><body><main class="shell"><div class="brand">APC Core</div><section class="grid" aria-label="APC Core modules"><a class="card" href="items/"><div><h2>Items</h2><p>Search and inspect the item catalogue.</p></div><span class="open">Open Item Explorer →</span></a><div class="card soon"><div><h2>Orders</h2><p>Order work will appear here.</p></div><span class="label">Coming soon</span></div><a class="card" href="customers/"><div><h2>Customers</h2><p>Search and inspect Core-owned customer records.</p></div><span class="open">Open Customer Explorer →</span></a><a class="card" href="customer-prices/"><div><h2>Customer Prices</h2><p>Search and safely edit imported customer-item price rows.</p></div><span class="open">Open Customer Price →</span></a><div class="card soon"><div><h2>Shipments</h2><p>Shipment tracking will appear here.</p></div><span class="label">Coming soon</span></div><div class="card soon"><div><h2>Activity</h2><p>Shared activity will appear here.</p></div><span class="label">Coming soon</span></div></section></main></body></html>"""
 
 
 def _menu_html() -> str:
@@ -712,7 +712,7 @@ def _customer_explorer_html() -> str:
     return _staff_identity_shell(html)
 
 
-def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None, *, customer_lan_ingress: bool = False):
+def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None, customer_price_module=None, *, customer_lan_ingress: bool = False):
     def _canonical_program_path(path: str) -> str:
         """Accept the canonical /program/ mount while keeping proxy-stripped routes compatible."""
         return path.removeprefix("/program") if path.startswith("/program/") else path
@@ -740,6 +740,10 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                 self.end_headers()
                 return
             parsed = parsed._replace(path=_canonical_program_path(parsed.path))
+            price_read_path = parsed.path == "/customer-prices/" or parsed.path == "/customer-prices/api/customers" or parsed.path.startswith("/customer-prices/api/customers/")
+            if customer_price_module is not None and price_read_path and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
+                self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer price access is loopback-only unless customer LAN ingress is enabled"})
+                return
             customer_read_path = (
                 parsed.path == "/customers/"
                 or parsed.path == "/customers/api/staff"
@@ -756,6 +760,19 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
             if parsed.path == "/items/":
                 body = _item_explorer_html().encode("utf-8")
                 self.send_response(HTTPStatus.OK); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
+            if customer_price_module is not None and parsed.path == "/customer-prices/":
+                body = _staff_identity_shell(customer_price_module.html()).encode("utf-8")
+                self.send_response(HTTPStatus.OK); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
+            if customer_price_module is not None and parsed.path == "/customer-prices/api/customers":
+                self._send_json(HTTPStatus.OK, {"customer_codes": customer_price_module.customer_codes()})
+                return
+            if customer_price_module is not None and parsed.path.startswith("/customer-prices/api/customers/"):
+                try:
+                    suffix = parsed.path.removeprefix("/customer-prices/api/customers/")
+                    self._send_json(HTTPStatus.OK, customer_price_module.search(unquote(suffix), parse_qs(parsed.query).get("q", [""])[0]))
+                except (ValueError, sqlite3.Error):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid customer price query"})
+                return
             if customer_explorer is not None and parsed.path == "/customers/":
                 body = _customer_explorer_html().encode("utf-8")
                 self.send_response(HTTPStatus.OK); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
@@ -803,6 +820,31 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
 
         def do_POST(self) -> None:
             customer_path = _canonical_program_path(urlparse(self.path).path)
+            if customer_price_module is not None and customer_path.startswith("/customer-prices/api/customers/"):
+                if not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer price mutations are loopback-only unless customer LAN ingress is enabled"})
+                    return
+                try:
+                    content_length = int(self.headers.get("Content-Length", "-1"))
+                    if content_length < 0 or content_length > 200_000:
+                        raise ValueError
+                    payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                    if type(payload) is not dict:
+                        raise ValueError
+                    suffix = customer_path.removeprefix("/customer-prices/api/customers/")
+                    parts = tuple(unquote(part) for part in suffix.split("/") if part)
+                    if len(parts) == 3 and parts[1:] == ("paste", "preview") and set(payload) == {"tsv"}:
+                        self._send_json(HTTPStatus.OK, customer_price_module.preview_tsv(parts[0], payload["tsv"]))
+                    elif len(parts) == 3 and parts[1:] == ("paste", "apply") and set(payload) == {"tsv", "actor"}:
+                        preview = customer_price_module.preview_tsv(parts[0], payload["tsv"])
+                        self._send_json(HTTPStatus.OK, customer_price_module.apply_preview(parts[0], preview, payload["actor"]))
+                    elif len(parts) == 3 and parts[1] == "items" and set(payload) == {"price", "actor"}:
+                        self._send_json(HTTPStatus.OK, {"row": customer_price_module.edit(parts[0], parts[2], payload["price"], payload["actor"])})
+                    else:
+                        raise ValueError
+                except (UnicodeDecodeError, json.JSONDecodeError, ValueError, sqlite3.Error):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid customer price mutation"})
+                return
             if customer_explorer is not None and (customer_path == "/customers/api/customers" or customer_path.startswith("/customers/api/customers/")):
                 if not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
                     self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer mutations are loopback-only unless customer LAN ingress is enabled"})

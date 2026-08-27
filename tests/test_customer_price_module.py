@@ -1,0 +1,216 @@
+import hashlib
+import sqlite3
+import tempfile
+import unittest
+from pathlib import Path
+
+
+class CustomerPriceModuleContractTests(unittest.TestCase):
+    def make_snapshot(self, root: Path) -> Path:
+        source = root / "accepted-prices.sqlite"
+        connection = sqlite3.connect(source)
+        connection.execute('CREATE TABLE "MainDB__CUST" ("Cust ID" TEXT, "Name" TEXT, "Price Type" TEXT)')
+        connection.executemany(
+            'INSERT INTO "MainDB__CUST" VALUES (?, ?, ?)',
+            [("C-001", "Pacific Plants", "EU"), ("C-002", "Thai Plants", "TH")],
+        )
+        connection.execute('CREATE TABLE "MainDB__ITEM" ("Item ID" TEXT, "Description" TEXT)')
+        connection.executemany(
+            'INSERT INTO "MainDB__ITEM" VALUES (?, ?)',
+            [("IT-001", "Anubias"), ("IT-002", "Cryptocoryne")],
+        )
+        connection.execute('CREATE TABLE "MainDB__CUST_PRC" ("Cust ID" TEXT, "Item ID" TEXT, "Price" TEXT)')
+        connection.executemany(
+            'INSERT INTO "MainDB__CUST_PRC" VALUES (?, ?, ?)',
+            [
+                ("C-001", "IT-001", "12.50"),
+                ("C-001", "IT-002", "20"),
+                ("C-002", "IT-001", "30"),
+                # Source duplicates must never be picked implicitly.
+                ("C-002", "IT-001", "31"),
+                # Unknown source relationships are never promoted to Core rows.
+                ("C-404", "IT-001", "40"),
+                ("C-001", "IT-404", "50"),
+            ],
+        )
+        connection.commit()
+        connection.close()
+        return source
+
+    def test_imports_readonly_snapshot_prices_by_customer_item_natural_key_with_provenance_and_quarantine(self):
+        from apc_core.customer_price_module import CustomerPriceModule
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_snapshot(root)
+            source_before = source.read_bytes()
+            prices = CustomerPriceModule(source, data_dir=root / "state")
+
+            summary = prices.import_from_snapshot()
+            result = prices.search("C-001", query="anub")
+
+            self.assertEqual({"accepted": 2, "duplicate": 2, "unknown": 2, "preserved": 0}, summary)
+            self.assertEqual("C-001", result["customer_code"])
+            self.assertEqual(["IT-001"], [row["item_id"] for row in result["rows"]])
+            self.assertEqual("12.50", result["rows"][0]["price"])
+            self.assertEqual(hashlib.sha256(source_before).hexdigest(), result["rows"][0]["source_artifact_sha256"])
+            self.assertEqual("snapshot", result["rows"][0]["provenance"])
+            self.assertNotIn("price_type", result)
+            self.assertEqual(source_before, source.read_bytes())
+            self.assertEqual(
+                {("C-002", "IT-001", "duplicate_natural_key"), ("C-404", "IT-001", "unknown_customer"), ("C-001", "IT-404", "unknown_item")},
+                {(entry["customer_code"], entry["item_id"], entry["reason"]) for entry in prices.quarantine()},
+            )
+
+    def test_individual_edit_requires_selected_actor_preserves_raw_price_type_and_audits_before_after(self):
+        from apc_core.customer_price_module import CustomerPriceModule
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prices = CustomerPriceModule(self.make_snapshot(root), data_dir=root / "state")
+            prices.import_from_snapshot()
+
+            with self.assertRaises(ValueError):
+                prices.edit("C-001", "IT-001", "13.75", None)
+            edited = prices.edit("C-001", "IT-001", "13.75", "YIM")
+
+            self.assertEqual("13.75", edited["price"])
+            self.assertEqual("core_override", edited["provenance"])
+            self.assertEqual(
+                [{
+                    "customer_code": "C-001", "item_id": "IT-001", "action": "price_edited",
+                    "before": {"price": "12.50"}, "after": {"price": "13.75"}, "actor_username": "YIM",
+                }],
+                prices.activity("C-001"),
+            )
+            self.assertNotIn("Price Type", repr(prices.activity("C-001")))
+
+    def test_tsv_preview_classifies_valid_invalid_unknown_duplicate_and_changes_without_mutating_until_apply(self):
+        from apc_core.customer_price_module import CustomerPriceModule
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prices = CustomerPriceModule(self.make_snapshot(root), data_dir=root / "state")
+            prices.import_from_snapshot()
+            paste = "Item ID\tPrice\nIT-001\t14.00\nIT-404\t11\nIT-002\tnot-a-number\nIT-001\t15\n"
+
+            preview = prices.preview_tsv("C-001", paste)
+
+            self.assertEqual(["IT-001"], [row["item_id"] for row in preview["valid"]])
+            self.assertEqual(["IT-404"], [row["item_id"] for row in preview["unknown"]])
+            self.assertEqual(["IT-002"], [row["item_id"] for row in preview["invalid"]])
+            self.assertEqual(["IT-001"], [row["item_id"] for row in preview["duplicate"]])
+            self.assertEqual(
+                [{"customer_code": "C-001", "item_id": "IT-001", "before": "12.50", "after": "14.00"}],
+                preview["changes"],
+            )
+            self.assertEqual("12.50", prices.search("C-001")["rows"][0]["price"])
+            with self.assertRaises(ValueError):
+                prices.apply_preview("C-001", preview, "YIM")
+            self.assertEqual("12.50", prices.search("C-001")["rows"][0]["price"])
+
+            clean_preview = prices.preview_tsv("C-001", "Item ID\tPrice\nIT-001\t14.00\nIT-002\t22\n")
+            applied = prices.apply_preview("C-001", clean_preview, "YIM")
+            self.assertEqual(2, applied["applied"])
+            self.assertEqual(["14.00", "22"], [row["price"] for row in prices.search("C-001")["rows"]])
+            self.assertEqual(["price_bulk_applied", "price_bulk_applied"], [row["action"] for row in prices.activity("C-001")])
+
+    def test_loopback_api_and_apple_calm_panel_require_selected_actor_and_explicit_clean_apply(self):
+        from http.client import HTTPConnection
+        from http.server import ThreadingHTTPServer
+        import json
+        import threading
+        from apc_core.customer_price_module import CustomerPriceModule
+        from apc_core.item_explorer import ItemExplorer, make_handler
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_snapshot(root)
+            prices = CustomerPriceModule(source, data_dir=root / "state")
+            prices.import_from_snapshot()
+            items = ItemExplorer(source, data_dir=root / "state")
+            server = ThreadingHTTPServer(
+                ("127.0.0.1", 0),
+                make_handler(items, {"accepted": True}, customer_price_module=prices),
+            )
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                host, port = server.server_address
+                connection = HTTPConnection(host, port, timeout=3)
+                connection.request("GET", "/customer-prices/")
+                response = connection.getresponse()
+                html = response.read().decode("utf-8")
+                connection.close()
+                self.assertEqual(200, response.status)
+                for marker in (
+                    "Customer Price", "Customer Code", "Search item-price rows", "Paste Excel TSV",
+                    "Preview", "Apply", "textContent", "window.apcCoreActiveStaff", "soft-brutalist",
+                ):
+                    self.assertIn(marker, html)
+                self.assertNotIn("Price Type", html)
+
+                connection = HTTPConnection(host, port, timeout=3)
+                connection.request("GET", "/customer-prices/api/customers/C-001?q=anub")
+                response = connection.getresponse()
+                payload = json.loads(response.read())
+                connection.close()
+                self.assertEqual(200, response.status)
+                self.assertEqual(["IT-001"], [row["item_id"] for row in payload["rows"]])
+
+                connection = HTTPConnection(host, port, timeout=3)
+                connection.request(
+                    "POST", "/customer-prices/api/customers/C-001/items/IT-001",
+                    json.dumps({"price": "16", "actor": "YIM"}),
+                    {"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                self.assertEqual(200, response.status)
+                response.read()
+                connection.close()
+
+                invalid_tsv = "Item ID\tPrice\nIT-001\t17\nIT-001\t18\n"
+                connection = HTTPConnection(host, port, timeout=3)
+                connection.request(
+                    "POST", "/customer-prices/api/customers/C-001/paste/preview",
+                    json.dumps({"tsv": invalid_tsv}),
+                    {"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                preview = json.loads(response.read())
+                connection.close()
+                self.assertEqual(200, response.status)
+                self.assertEqual(1, len(preview["duplicate"]))
+
+                connection = HTTPConnection(host, port, timeout=3)
+                connection.request(
+                    "POST", "/customer-prices/api/customers/C-001/paste/apply",
+                    json.dumps({"tsv": invalid_tsv, "actor": "YIM"}),
+                    {"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                response.read()
+                connection.close()
+                self.assertEqual(400, response.status)
+                self.assertEqual("16", prices.search("C-001", query="IT-001")["rows"][0]["price"])
+
+                clean_tsv = "Item ID\tPrice\nIT-001\t17\n"
+                connection = HTTPConnection(host, port, timeout=3)
+                connection.request(
+                    "POST", "/customer-prices/api/customers/C-001/paste/apply",
+                    json.dumps({"tsv": clean_tsv, "actor": "YIM"}),
+                    {"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                payload = json.loads(response.read())
+                connection.close()
+                self.assertEqual(200, response.status)
+                self.assertEqual(1, payload["applied"])
+                self.assertEqual("17", prices.search("C-001", query="IT-001")["rows"][0]["price"])
+            finally:
+                server.shutdown()
+                server.server_close()
+
+
+if __name__ == "__main__":
+    unittest.main()
