@@ -86,8 +86,9 @@ class StaffIdentityFoundationTests(unittest.TestCase):
                 server.server_close()
 
         html = __import__("apc_core.item_explorer", fromlist=["_item_explorer_html"])._item_explorer_html()
-        for marker in ("Choose user", "Continue", "Change user", "localStorage", "not security", "identity-confirm"):
+        for marker in ("identity-tiles", "identity-tile", "identity-change-user", "localStorage", "not security", "identity-confirm", "api/staff"):
             self.assertIn(marker, html)
+        self.assertNotIn('id="confirm-user"', html)
 
 
 if __name__ == "__main__":
