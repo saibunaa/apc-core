@@ -11,6 +11,7 @@ from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import os
+import secrets
 import sqlite3
 import stat
 import threading
@@ -78,17 +79,21 @@ class CustomerPriceModule:
             self._source.close()
             raise ValueError("price source lacks items")
         self._lock = threading.RLock()
+        self._previews: dict[str, dict[str, object]] = {}
         self._store = CoreStore(Path(data_dir or os.environ.get("APC_CORE_DATA_DIR", "state")))
         connection = self._store.connection
         connection.execute(
             "CREATE TABLE IF NOT EXISTS customer_price_rows ("
             "customer_code TEXT NOT NULL, item_id TEXT NOT NULL, item_description TEXT NOT NULL DEFAULT '', price TEXT NOT NULL, "
             "source_artifact_path TEXT NOT NULL, source_artifact_sha256 TEXT NOT NULL, "
-            "imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, core_override INTEGER NOT NULL DEFAULT 0 "
-            "CHECK(core_override IN (0,1)), PRIMARY KEY(customer_code,item_id))"
+            "imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, core_override INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1 "
+            "CHECK(core_override IN (0,1)), CHECK(active IN (0,1)), PRIMARY KEY(customer_code,item_id))"
         )
-        if "item_description" not in _table_columns(connection, "customer_price_rows"):
+        columns = _table_columns(connection, "customer_price_rows")
+        if "item_description" not in columns:
             connection.execute("ALTER TABLE customer_price_rows ADD COLUMN item_description TEXT NOT NULL DEFAULT ''")
+        if "active" not in columns:
+            connection.execute("ALTER TABLE customer_price_rows ADD COLUMN active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1))")
         connection.execute(
             "CREATE TABLE IF NOT EXISTS customer_price_quarantine ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT, customer_code TEXT NOT NULL, item_id TEXT NOT NULL, "
@@ -148,6 +153,7 @@ class CustomerPriceModule:
             keys = [(customer, item) for customer, item, _ in rows]
             duplicate_keys = {key for key, count in Counter(keys).items() if count > 1}
             counts = {"accepted": 0, "duplicate": 0, "unknown": 0, "preserved": 0}
+            connection.execute("UPDATE customer_price_rows SET active=0 WHERE active=1")
             for customer_code, item_id, price in rows:
                 if (customer_code, item_id) in duplicate_keys:
                     connection.execute(
@@ -189,23 +195,27 @@ class CustomerPriceModule:
                         (customer_code, item_id, items[item_id], price, str(self.source_path), self._source_sha256),
                     )
                 elif existing[1]:
+                    connection.execute(
+                        "UPDATE customer_price_rows SET item_description=?,source_artifact_path=?,source_artifact_sha256=?,imported_at=CURRENT_TIMESTAMP,active=1 WHERE customer_code=? AND item_id=?",
+                        (items[item_id], str(self.source_path), self._source_sha256, customer_code, item_id),
+                    )
                     counts["preserved"] += 1
                 else:
                     connection.execute(
-                        "UPDATE customer_price_rows SET item_description=?,price=?,source_artifact_path=?,source_artifact_sha256=?,imported_at=CURRENT_TIMESTAMP WHERE customer_code=? AND item_id=?",
+                        "UPDATE customer_price_rows SET item_description=?,price=?,source_artifact_path=?,source_artifact_sha256=?,imported_at=CURRENT_TIMESTAMP,active=1 WHERE customer_code=? AND item_id=?",
                         (items[item_id], price, str(self.source_path), self._source_sha256, customer_code, item_id),
                     )
                 counts["accepted"] += 1
             return counts
 
     def customer_codes(self) -> list[str]:
-        return [row[0] for row in self._store.connection.execute("SELECT DISTINCT customer_code FROM customer_price_rows ORDER BY customer_code")]
+        return [row[0] for row in self._store.connection.execute("SELECT DISTINCT customer_code FROM customer_price_rows WHERE active=1 ORDER BY customer_code")]
 
     def _require_customer(self, customer_code: object) -> str:
         if type(customer_code) is not str or not customer_code.strip():
             raise ValueError("invalid customer code")
         clean = customer_code.strip()
-        if not self._store.connection.execute("SELECT 1 FROM customer_price_rows WHERE customer_code=?", (clean,)).fetchone():
+        if not self._store.connection.execute("SELECT 1 FROM customer_price_rows WHERE customer_code=? AND active=1", (clean,)).fetchone():
             raise ValueError("unknown customer code")
         return clean
 
@@ -222,7 +232,7 @@ class CustomerPriceModule:
                 "source_artifact_sha256": row[4], "provenance": "core_override" if row[5] else "snapshot",
             }
             for row in self._store.connection.execute(
-                "SELECT customer_code,item_id,item_description,price,source_artifact_sha256,core_override FROM customer_price_rows WHERE customer_code=? ORDER BY item_id",
+                "SELECT customer_code,item_id,item_description,price,source_artifact_sha256,core_override FROM customer_price_rows WHERE customer_code=? AND active=1 ORDER BY item_id",
                 (customer,),
             )
         ]
@@ -239,7 +249,7 @@ class CustomerPriceModule:
         actor = self._store.require_active_actor(actor_username)
         with self._lock, self._store.connection:
             row = self._store.connection.execute(
-                "SELECT price,source_artifact_sha256 FROM customer_price_rows WHERE customer_code=? AND item_id=?",
+                "SELECT price,source_artifact_sha256 FROM customer_price_rows WHERE customer_code=? AND item_id=? AND active=1",
                 (customer, item),
             ).fetchone()
             if row is None:
@@ -263,14 +273,14 @@ class CustomerPriceModule:
         header = [cell.strip().casefold() for cell in lines[0].split("\t")]
         if header != ["item id", "price"]:
             raise ValueError("TSV must have Item ID and Price columns")
-        known_items = {row[0] for row in self._store.connection.execute("SELECT item_id FROM customer_price_rows WHERE customer_code=?", (customer,))}
+        known_items = {row[0] for row in self._store.connection.execute("SELECT item_id FROM customer_price_rows WHERE customer_code=? AND active=1", (customer,))}
         valid: list[dict[str, object]] = []
         invalid: list[dict[str, object]] = []
         unknown: list[dict[str, object]] = []
         duplicate: list[dict[str, object]] = []
         changes: list[dict[str, str]] = []
         seen: set[str] = set()
-        current = {row[0]: row[1] for row in self._store.connection.execute("SELECT item_id,price FROM customer_price_rows WHERE customer_code=?", (customer,))}
+        current = {row[0]: row[1] for row in self._store.connection.execute("SELECT item_id,price FROM customer_price_rows WHERE customer_code=? AND active=1", (customer,))}
         for line_number, line in enumerate(lines[1:], start=2):
             cells = line.split("\t")
             if len(cells) != 2:
@@ -296,9 +306,26 @@ class CustomerPriceModule:
             valid.append(entry)
             if current[item] != price:
                 changes.append({"customer_code": customer, "item_id": item, "before": current[item], "after": price})
-        return {"customer_code": customer, "valid": valid, "invalid": invalid, "unknown": unknown, "duplicate": duplicate, "changes": changes}
+        result: dict[str, object] = {"customer_code": customer, "valid": valid, "invalid": invalid, "unknown": unknown, "duplicate": duplicate, "changes": changes}
+        preview_id = secrets.token_urlsafe(24)
+        with self._lock:
+            self._previews[preview_id] = json.loads(json.dumps(result, ensure_ascii=False))
+        result["preview_id"] = preview_id
+        return result
 
-    def apply_preview(self, customer_code: object, preview: object, actor_username: object) -> dict[str, int]:
+    def apply_preview_id(self, customer_code: object, preview_id: object, actor_username: object) -> dict[str, int]:
+        customer = self._require_customer(customer_code)
+        if type(preview_id) is not str:
+            raise ValueError("invalid preview")
+        with self._lock:
+            preview = self._previews.get(preview_id)
+            if preview is None or preview.get("customer_code") != customer:
+                raise ValueError("invalid preview")
+            result = self._apply_preview(customer, preview, actor_username)
+            del self._previews[preview_id]
+            return result
+
+    def _apply_preview(self, customer_code: object, preview: object, actor_username: object) -> dict[str, int]:
         customer = self._require_customer(customer_code)
         if type(preview) is not dict or preview.get("customer_code") != customer:
             raise ValueError("invalid preview")
@@ -316,7 +343,7 @@ class CustomerPriceModule:
                     raise ValueError("invalid preview")
                 clean_price = _validate_price(price)
                 current = self._store.connection.execute(
-                    "SELECT price FROM customer_price_rows WHERE customer_code=? AND item_id=?", (customer, item)
+                    "SELECT price FROM customer_price_rows WHERE customer_code=? AND item_id=? AND active=1", (customer, item)
                 ).fetchone()
                 if current is None:
                     raise ValueError("unknown customer-item price row")
@@ -332,7 +359,7 @@ class CustomerPriceModule:
 
     def html(self) -> str:
         """Static shell; all snapshot values are rendered through textContent."""
-        return """<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>APC Core · Customer Price</title><style>:root{--ink:#24272b;--muted:#68717c;--line:#e5e1db;--cream:#faf7f2;--paper:#fffdfa;--accent:#1d6b57;--warn:#8a6417}*{box-sizing:border-box}body{margin:0;background:var(--cream);color:var(--ink);font:14px -apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif}.shell{max-width:1240px;margin:auto;padding:26px}.back{color:var(--accent);font-weight:700;text-decoration:none}.toolbar{position:sticky;top:0;z-index:2;display:grid;grid-template-columns:minmax(220px,.5fr) minmax(260px,1fr) auto;gap:9px;padding:12px 0;background:var(--cream)}input,select,textarea,button{font:inherit;border:1px solid var(--line);border-radius:10px;padding:10px;background:#fffdfa}button{cursor:pointer;font-weight:700}.primary{background:var(--accent);color:#fff;border-color:var(--accent)}.workspace{border:1px solid var(--line);border-radius:18px;background:var(--paper);overflow:hidden}.hint{margin:0;color:var(--muted)}.summary{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;gap:12px;justify-content:space-between}.rows{width:100%;border-collapse:collapse}.rows th,.rows td{padding:12px 14px;border-bottom:1px solid var(--line);text-align:left}.rows th{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}.rows input{width:110px;padding:7px}.provenance{font-size:12px;color:var(--muted)}.paste{margin-top:18px;padding:16px;border:2px solid #d7c98d;border-radius:14px;background:#fffaf0}.soft-brutalist{box-shadow:4px 4px 0 #d7c98d}.paste textarea{display:block;width:100%;min-height:126px;margin:10px 0;resize:vertical}.preview{margin-top:12px;display:grid;gap:8px}.preview-card{padding:9px 11px;border-left:4px solid var(--warn);background:#fff}.preview-card.good{border-color:var(--accent)}[hidden]{display:none!important}@media(max-width:720px){.shell{padding:14px}.toolbar{grid-template-columns:1fr}.summary{display:block}.rows{font-size:12px}.rows th,.rows td{padding:9px 7px}}</style><body><main class=\"shell\"><a class=\"back\" href=\"../\">← APC Core</a><h1>Customer Price</h1><p class=\"hint\">Select a Customer Code, then search and edit that customer’s imported item-price rows. No pricing formulas or customer metadata rules are used.</p><section class=\"toolbar\"><label>Customer Code <select id=\"customer-code\"><option value=\"\">Choose customer</option></select></label><label>Search item-price rows <input id=\"search\" type=\"search\" autocomplete=\"off\"></label><button id=\"reload\" type=\"button\">Reload</button></section><section class=\"workspace\"><div class=\"summary\"><strong id=\"status\">Choose a Customer Code</strong><span class=\"provenance\">Accepted snapshot provenance retained per row</span></div><table class=\"rows\"><thead><tr><th>Item ID</th><th>Item</th><th>Price</th><th>Provenance</th><th></th></tr></thead><tbody id=\"rows\"></tbody></table></section><section class=\"paste soft-brutalist\"><h2>Paste Excel TSV</h2><p class=\"hint\">Header must be <b>Item ID</b> and <b>Price</b>. Preview classifies valid, invalid, unknown and duplicate rows before Apply.</p><textarea id=\"tsv\" aria-label=\"Paste Excel TSV\" placeholder=\"Item ID&#9;Price\"></textarea><button id=\"preview\" type=\"button\">Preview</button> <button id=\"apply\" class=\"primary\" type=\"button\" disabled>Apply</button><div id=\"preview-result\" class=\"preview\" aria-live=\"polite\"></div></section></main><script>(()=>{const $=id=>document.getElementById(id),customer=$(\"customer-code\"),search=$(\"search\"),rows=$(\"rows\"),status=$(\"status\"),tsv=$(\"tsv\"),previewResult=$(\"preview-result\"),apply=$(\"apply\");let preview=null;function active(){return window.apcCoreActiveStaff||\"\"}function request(path,method=\"GET\",body){return fetch(path,{method,headers:body?{\"Content-Type\":\"application/json\"}:{},body:body?JSON.stringify(body):undefined}).then(async response=>{const payload=await response.json();if(!response.ok)throw Error(payload.error||\"Request failed\");return payload})}function text(tag,value){const node=document.createElement(tag);node.textContent=value;return node}function clear(node){node.replaceChildren()}function render(payload){clear(rows);status.textContent=payload.total+\" item-price rows\";for(const row of payload.rows){const tr=document.createElement(\"tr\"),price=document.createElement(\"input\"),save=document.createElement(\"button\");price.value=row.price;price.inputMode=\"decimal\";save.type=\"button\";save.textContent=\"Save\";save.onclick=async()=>{if(!active()){status.textContent=\"Choose a user before saving.\";return}try{await request(\"api/customers/\"+encodeURIComponent(customer.value)+\"/items/\"+encodeURIComponent(row.item_id),\"POST\",{price:price.value,actor:active()});load()}catch(error){status.textContent=error.message}};tr.append(text(\"td\",row.item_id),text(\"td\",row.item_description),text(\"td\",\"\"));tr.children[2].append(price);tr.append(text(\"td\",row.provenance),text(\"td\",\"\"));tr.children[4].append(save);rows.append(tr)}}function load(){preview=null;apply.disabled=true;if(!customer.value){clear(rows);status.textContent=\"Choose a Customer Code\";return}request(\"api/customers/\"+encodeURIComponent(customer.value)+\"?q=\"+encodeURIComponent(search.value)).then(render).catch(error=>status.textContent=error.message)}function renderPreview(result){preview=result;clear(previewResult);for(const [kind,values] of Object.entries({valid:result.valid,invalid:result.invalid,unknown:result.unknown,duplicate:result.duplicate,changes:result.changes})){const card=document.createElement(\"div\");card.className=\"preview-card\"+(kind===\"valid\"||kind===\"changes\"?\" good\":\"\");card.textContent=kind+\": \"+values.length;previewResult.append(card)}apply.disabled=!(result.valid.length||result.changes.length)||result.invalid.length>0||result.unknown.length>0||result.duplicate.length>0}request(\"api/customers\").then(payload=>{for(const code of payload.customer_codes){const option=document.createElement(\"option\");option.value=code;option.textContent=code;customer.append(option)}});customer.onchange=load;search.oninput=()=>{clearTimeout(search.timer);search.timer=setTimeout(load,160)};$(\"reload\").onclick=load;$(\"preview\").onclick=()=>{if(!customer.value){status.textContent=\"Choose a Customer Code\";return}request(\"api/customers/\"+encodeURIComponent(customer.value)+\"/paste/preview\",\"POST\",{tsv:tsv.value}).then(renderPreview).catch(error=>{preview=null;apply.disabled=true;status.textContent=error.message})};apply.onclick=()=>{if(!active()){status.textContent=\"Choose a user before Apply.\";return}if(!preview)return;request(\"api/customers/\"+encodeURIComponent(customer.value)+\"/paste/apply\",\"POST\",{tsv:tsv.value,actor:active()}).then(payload=>{status.textContent=payload.applied+\" rows applied\";load()}).catch(error=>status.textContent=error.message)};window.addEventListener(\"apc-core-identity\",()=>{})})()</script></body></html>"""
+        return """<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>APC Core · Customer Price</title><style>:root{--ink:#24272b;--muted:#68717c;--line:#e5e1db;--cream:#faf7f2;--paper:#fffdfa;--accent:#1d6b57;--warn:#8a6417}*{box-sizing:border-box}body{margin:0;background:var(--cream);color:var(--ink);font:14px -apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif}.shell{max-width:1240px;margin:auto;padding:26px}.back{color:var(--accent);font-weight:700;text-decoration:none}.toolbar{position:sticky;top:0;z-index:2;display:grid;grid-template-columns:minmax(220px,.5fr) minmax(260px,1fr) auto;gap:9px;padding:12px 0;background:var(--cream)}input,select,textarea,button{font:inherit;border:1px solid var(--line);border-radius:10px;padding:10px;background:#fffdfa}button{cursor:pointer;font-weight:700}.primary{background:var(--accent);color:#fff;border-color:var(--accent)}.workspace{border:1px solid var(--line);border-radius:18px;background:var(--paper);overflow:hidden}.hint{margin:0;color:var(--muted)}.summary{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;gap:12px;justify-content:space-between}.rows{width:100%;border-collapse:collapse}.rows th,.rows td{padding:12px 14px;border-bottom:1px solid var(--line);text-align:left}.rows th{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}.rows input{width:110px;padding:7px}.provenance{font-size:12px;color:var(--muted)}.paste{margin-top:18px;padding:16px;border:2px solid #d7c98d;border-radius:14px;background:#fffaf0}.soft-brutalist{box-shadow:4px 4px 0 #d7c98d}.paste textarea{display:block;width:100%;min-height:126px;margin:10px 0;resize:vertical}.preview{margin-top:12px;display:grid;gap:8px}.preview-card{padding:9px 11px;border-left:4px solid var(--warn);background:#fff}.preview-card.good{border-color:var(--accent)}[hidden]{display:none!important}@media(max-width:720px){.shell{padding:14px}.toolbar{grid-template-columns:1fr}.summary{display:block}.rows{font-size:12px}.rows th,.rows td{padding:9px 7px}}</style><body><main class=\"shell\"><a class=\"back\" href=\"../\">← APC Core</a><h1>Customer Price</h1><p class=\"hint\">Select a Customer Code, then search and edit that customer’s imported item-price rows. No pricing formulas or customer metadata rules are used.</p><section class=\"toolbar\"><label>Customer Code <select id=\"customer-code\"><option value=\"\">Choose customer</option></select></label><label>Search item-price rows <input id=\"search\" type=\"search\" autocomplete=\"off\"></label><button id=\"reload\" type=\"button\">Reload</button></section><section class=\"workspace\"><div class=\"summary\"><strong id=\"status\">Choose a Customer Code</strong><span class=\"provenance\">Accepted snapshot provenance retained per row</span></div><table class=\"rows\"><thead><tr><th>Item ID</th><th>Item</th><th>Price</th><th>Provenance</th><th></th></tr></thead><tbody id=\"rows\"></tbody></table></section><section class=\"paste soft-brutalist\"><h2>Paste Excel TSV</h2><p class=\"hint\">Header must be <b>Item ID</b> and <b>Price</b>. Preview classifies valid, invalid, unknown and duplicate rows before Apply.</p><textarea id=\"tsv\" aria-label=\"Paste Excel TSV\" placeholder=\"Item ID&#9;Price\"></textarea><button id=\"preview\" type=\"button\">Preview</button> <button id=\"apply\" class=\"primary\" type=\"button\" disabled>Apply</button><div id=\"preview-result\" class=\"preview\" aria-live=\"polite\"></div></section></main><script>(()=>{const $=id=>document.getElementById(id),customer=$(\"customer-code\"),search=$(\"search\"),rows=$(\"rows\"),status=$(\"status\"),tsv=$(\"tsv\"),previewResult=$(\"preview-result\"),apply=$(\"apply\");let preview=null;function active(){return window.apcCoreActiveStaff||\"\"}function request(path,method=\"GET\",body){return fetch(path,{method,headers:body?{\"Content-Type\":\"application/json\"}:{},body:body?JSON.stringify(body):undefined}).then(async response=>{const payload=await response.json();if(!response.ok)throw Error(payload.error||\"Request failed\");return payload})}function text(tag,value){const node=document.createElement(tag);node.textContent=value;return node}function clear(node){node.replaceChildren()}function render(payload){clear(rows);status.textContent=payload.total+\" item-price rows\";for(const row of payload.rows){const tr=document.createElement(\"tr\"),price=document.createElement(\"input\"),save=document.createElement(\"button\");price.value=row.price;price.inputMode=\"decimal\";save.type=\"button\";save.textContent=\"Save\";save.onclick=async()=>{if(!active()){status.textContent=\"Choose a user before saving.\";return}try{await request(\"api/customers/\"+encodeURIComponent(customer.value)+\"/items/\"+encodeURIComponent(row.item_id),\"POST\",{price:price.value,actor:active()});load()}catch(error){status.textContent=error.message}};tr.append(text(\"td\",row.item_id),text(\"td\",row.item_description),text(\"td\",\"\"));tr.children[2].append(price);tr.append(text(\"td\",row.provenance),text(\"td\",\"\"));tr.children[4].append(save);rows.append(tr)}}function load(){preview=null;apply.disabled=true;if(!customer.value){clear(rows);status.textContent=\"Choose a Customer Code\";return}request(\"api/customers/\"+encodeURIComponent(customer.value)+\"?q=\"+encodeURIComponent(search.value)).then(render).catch(error=>status.textContent=error.message)}function renderPreview(result){preview=result;clear(previewResult);for(const [kind,values] of Object.entries({valid:result.valid,invalid:result.invalid,unknown:result.unknown,duplicate:result.duplicate,changes:result.changes})){const card=document.createElement(\"div\");card.className=\"preview-card\"+(kind===\"valid\"||kind===\"changes\"?\" good\":\"\");card.append(text(\"strong\",kind+\": \"+values.length));for(const row of values){const detail=text(\"div\",kind===\"changes\"?row.item_id+\": \"+row.before+\" → \"+row.after:(row.item_id||\"line \"+row.line)+\": \"+(row.reason||row.price));card.append(detail)}previewResult.append(card)}apply.disabled=!(result.valid.length||result.changes.length)||result.invalid.length>0||result.unknown.length>0||result.duplicate.length>0}request(\"api/customers\").then(payload=>{for(const code of payload.customer_codes){const option=document.createElement(\"option\");option.value=code;option.textContent=code;customer.append(option)}});tsv.oninput=()=>{preview=null;apply.disabled=true;clear(previewResult)};customer.onchange=load;search.oninput=()=>{clearTimeout(search.timer);search.timer=setTimeout(load,160)};$(\"reload\").onclick=load;$(\"preview\").onclick=()=>{if(!customer.value){status.textContent=\"Choose a Customer Code\";return}request(\"api/customers/\"+encodeURIComponent(customer.value)+\"/paste/preview\",\"POST\",{tsv:tsv.value}).then(renderPreview).catch(error=>{preview=null;apply.disabled=true;status.textContent=error.message})};apply.onclick=()=>{if(!active()){status.textContent=\"Choose a user before Apply.\";return}if(!preview)return;request(\"api/customers/\"+encodeURIComponent(customer.value)+\"/paste/apply\",\"POST\",{preview_id:preview.preview_id,actor:active()}).then(payload=>{status.textContent=payload.applied+\" rows applied\";load()}).catch(error=>status.textContent=error.message)};window.addEventListener(\"apc-core-identity\",()=>{})})()</script></body></html>"""
 
     def activity(self, customer_code: object) -> list[dict[str, object]]:
         customer = self._require_customer(customer_code)

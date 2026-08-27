@@ -835,9 +835,8 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                     parts = tuple(unquote(part) for part in suffix.split("/") if part)
                     if len(parts) == 3 and parts[1:] == ("paste", "preview") and set(payload) == {"tsv"}:
                         self._send_json(HTTPStatus.OK, customer_price_module.preview_tsv(parts[0], payload["tsv"]))
-                    elif len(parts) == 3 and parts[1:] == ("paste", "apply") and set(payload) == {"tsv", "actor"}:
-                        preview = customer_price_module.preview_tsv(parts[0], payload["tsv"])
-                        self._send_json(HTTPStatus.OK, customer_price_module.apply_preview(parts[0], preview, payload["actor"]))
+                    elif len(parts) == 3 and parts[1:] == ("paste", "apply") and set(payload) == {"preview_id", "actor"}:
+                        self._send_json(HTTPStatus.OK, customer_price_module.apply_preview_id(parts[0], payload["preview_id"], payload["actor"]))
                     elif len(parts) == 3 and parts[1] == "items" and set(payload) == {"price", "actor"}:
                         self._send_json(HTTPStatus.OK, {"row": customer_price_module.edit(parts[0], parts[2], payload["price"], payload["actor"])})
                     else:

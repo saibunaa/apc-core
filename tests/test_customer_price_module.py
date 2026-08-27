@@ -62,6 +62,33 @@ class CustomerPriceModuleContractTests(unittest.TestCase):
                 {(entry["customer_code"], entry["item_id"], entry["reason"]) for entry in prices.quarantine()},
             )
 
+    def test_later_snapshot_retires_missing_price_rows_so_they_are_not_searchable_or_editable(self):
+        from apc_core.customer_price_module import CustomerPriceModule
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = self.make_snapshot(root)
+            second = root / "later.sqlite"
+            connection = sqlite3.connect(second)
+            connection.execute('CREATE TABLE "MainDB__CUST" ("Cust ID" TEXT, "Name" TEXT)')
+            connection.execute('INSERT INTO "MainDB__CUST" VALUES (?, ?)', ("C-001", "Pacific Plants"))
+            connection.execute('CREATE TABLE "MainDB__ITEM" ("Item ID" TEXT, "Description" TEXT)')
+            connection.execute('INSERT INTO "MainDB__ITEM" VALUES (?, ?)', ("IT-001", "Anubias"))
+            connection.execute('CREATE TABLE "MainDB__CUST_PRC" ("Cust ID" TEXT, "Item ID" TEXT, "Price" TEXT)')
+            connection.execute('INSERT INTO "MainDB__CUST_PRC" VALUES (?, ?, ?)', ("C-001", "IT-001", "13"))
+            connection.commit(); connection.close()
+            state = root / "state"
+
+            old = CustomerPriceModule(first, data_dir=state)
+            old.import_from_snapshot(); old.close()
+            current = CustomerPriceModule(second, data_dir=state)
+            current.import_from_snapshot()
+
+            self.assertEqual(["IT-001"], [row["item_id"] for row in current.search("C-001")["rows"]])
+            self.assertEqual("13", current.search("C-001")["rows"][0]["price"])
+            with self.assertRaises(ValueError):
+                current.edit("C-001", "IT-002", "22", "YIM")
+
     def test_individual_edit_requires_selected_actor_preserves_raw_price_type_and_audits_before_after(self):
         from apc_core.customer_price_module import CustomerPriceModule
 
@@ -106,14 +133,30 @@ class CustomerPriceModuleContractTests(unittest.TestCase):
             )
             self.assertEqual("12.50", prices.search("C-001")["rows"][0]["price"])
             with self.assertRaises(ValueError):
-                prices.apply_preview("C-001", preview, "YIM")
+                prices.apply_preview_id("C-001", preview["preview_id"], "YIM")
             self.assertEqual("12.50", prices.search("C-001")["rows"][0]["price"])
 
             clean_preview = prices.preview_tsv("C-001", "Item ID\tPrice\nIT-001\t14.00\nIT-002\t22\n")
-            applied = prices.apply_preview("C-001", clean_preview, "YIM")
+            applied = prices.apply_preview_id("C-001", clean_preview["preview_id"], "YIM")
             self.assertEqual(2, applied["applied"])
             self.assertEqual(["14.00", "22"], [row["price"] for row in prices.search("C-001")["rows"]])
             self.assertEqual(["price_bulk_applied", "price_bulk_applied"], [row["action"] for row in prices.activity("C-001")])
+
+    def test_apply_requires_a_server_issued_preview_id_and_rejects_reuse(self):
+        from apc_core.customer_price_module import CustomerPriceModule
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prices = CustomerPriceModule(self.make_snapshot(root), data_dir=root / "state")
+            prices.import_from_snapshot()
+            preview = prices.preview_tsv("C-001", "Item ID\tPrice\nIT-001\t14\n")
+
+            self.assertTrue(preview["preview_id"])
+            self.assertEqual({"applied": 1}, prices.apply_preview_id("C-001", preview["preview_id"], "YIM"))
+            with self.assertRaises(ValueError):
+                prices.apply_preview_id("C-001", preview["preview_id"], "YIM")
+            with self.assertRaises(ValueError):
+                prices.apply_preview_id("C-001", "not-a-preview", "YIM")
 
     def test_loopback_api_and_apple_calm_panel_require_selected_actor_and_explicit_clean_apply(self):
         from http.client import HTTPConnection
@@ -146,6 +189,7 @@ class CustomerPriceModuleContractTests(unittest.TestCase):
                 for marker in (
                     "Customer Price", "Customer Code", "Search item-price rows", "Paste Excel TSV",
                     "Preview", "Apply", "textContent", "window.apcCoreActiveStaff", "soft-brutalist",
+                    "preview_id", "tsv.oninput", "row.before", "row.after",
                 ):
                     self.assertIn(marker, html)
                 self.assertNotIn("Price Type", html)
@@ -185,7 +229,7 @@ class CustomerPriceModuleContractTests(unittest.TestCase):
                 connection = HTTPConnection(host, port, timeout=3)
                 connection.request(
                     "POST", "/customer-prices/api/customers/C-001/paste/apply",
-                    json.dumps({"tsv": invalid_tsv, "actor": "YIM"}),
+                    json.dumps({"preview_id": preview["preview_id"], "actor": "YIM"}),
                     {"Content-Type": "application/json"},
                 )
                 response = connection.getresponse()
@@ -197,8 +241,18 @@ class CustomerPriceModuleContractTests(unittest.TestCase):
                 clean_tsv = "Item ID\tPrice\nIT-001\t17\n"
                 connection = HTTPConnection(host, port, timeout=3)
                 connection.request(
+                    "POST", "/customer-prices/api/customers/C-001/paste/preview",
+                    json.dumps({"tsv": clean_tsv}),
+                    {"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                clean_preview = json.loads(response.read())
+                connection.close()
+                self.assertEqual(200, response.status)
+                connection = HTTPConnection(host, port, timeout=3)
+                connection.request(
                     "POST", "/customer-prices/api/customers/C-001/paste/apply",
-                    json.dumps({"tsv": clean_tsv, "actor": "YIM"}),
+                    json.dumps({"preview_id": clean_preview["preview_id"], "actor": "YIM"}),
                     {"Content-Type": "application/json"},
                 )
                 response = connection.getresponse()
