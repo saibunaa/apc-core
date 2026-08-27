@@ -730,6 +730,12 @@ class TestCustomerExplorerContract(unittest.TestCase):
                 self.assertIn("document.activeElement===last", html)
                 self.assertIn("commitCustomerCode", html)
                 self.assertIn("await load()", html)
+                self.assertIn("Customer Type", html)
+                self.assertIn("Grower", html)
+                self.assertIn("Wholeseller", html)
+                self.assertIn("Retail", html)
+                self.assertIn("card.dataset.choiceField=field", html)
+                self.assertIn("Type '+(c.price_type||'—')", html)
                 self.assertIn("event.key==='Tab'", html)
                 self.assertNotIn('Order Entry UI', html)
 
