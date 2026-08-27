@@ -106,7 +106,7 @@ class ItemExplorerTests(unittest.TestCase):
                 self.assertNotIn("snapshot", menu_html.lower())
                 for module in ("Orders", "Customers", "Shipments", "Activity"):
                     self.assertIn(module, menu_html)
-                self.assertEqual(4, menu_html.count("Coming soon"))
+                self.assertEqual(3, menu_html.count("Coming soon"))
                 conn.close()
 
                 conn = HTTPConnection(host, port, timeout=3)
