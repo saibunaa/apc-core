@@ -34,17 +34,6 @@ class BangkokBankArchivedRate:
     usd_thb_per_unit: str
     sgd_thb_per_unit: str
     usd_to_sgd: str
-    source_url: str
-    currency_column_label: str
-    tt_buying_column_label: str
-    usd_currency_label: str
-    usd_column_label: str
-    usd_raw_value: str
-    sgd_currency_label: str
-    sgd_column_label: str
-    sgd_raw_value: str
-    source_document_sha256: str
-    source_evidence_sha256: str
     content_sha256: str
 
 
@@ -71,21 +60,8 @@ def _canonical_snapshot(snapshot: object, update_slot: object) -> dict[str, obje
         raise BangkokBankRateArchiveError("displayed timestamp date does not match selected date")
     retrieved_at = _bangkok_datetime(snapshot.retrieved_at)
     values = (snapshot.usd.thb_per_unit, snapshot.sgd.thb_per_unit, snapshot.usd_to_sgd)
-    provenance = {
-        "source_url": snapshot.source_url,
-        "currency_column_label": snapshot.currency_column_label,
-        "tt_buying_column_label": snapshot.tt_buying_column_label,
-        "usd_currency_label": snapshot.usd.currency_label,
-        "usd_column_label": snapshot.usd.column_label,
-        "usd_raw_value": snapshot.usd.raw_value,
-        "sgd_currency_label": snapshot.sgd.currency_label,
-        "sgd_column_label": snapshot.sgd.column_label,
-        "sgd_raw_value": snapshot.sgd.raw_value,
-        "source_document_sha256": snapshot.source_document_sha256,
-    }
-    if any(type(value) is not str or not value for value in (*values, *provenance.values())) or len(snapshot.source_document_sha256) != 64 or any(character not in "0123456789abcdef" for character in snapshot.source_document_sha256.casefold()):
-        raise BangkokBankRateArchiveError("rate provenance is invalid")
-    source_evidence_sha256 = _digest(provenance)
+    if any(type(value) is not str or not value for value in values):
+        raise BangkokBankRateArchiveError("rate values are invalid")
     return {
         "source_date": selected_at.date().isoformat(),
         "update_slot": update_slot,
@@ -95,8 +71,6 @@ def _canonical_snapshot(snapshot: object, update_slot: object) -> dict[str, obje
         "usd_thb_per_unit": snapshot.usd.thb_per_unit,
         "sgd_thb_per_unit": snapshot.sgd.thb_per_unit,
         "usd_to_sgd": snapshot.usd_to_sgd,
-        **provenance,
-        "source_evidence_sha256": source_evidence_sha256,
     }
 
 
@@ -123,15 +97,8 @@ class BangkokBankRateArchive:
                 "snapshot_id INTEGER PRIMARY KEY, source_date TEXT NOT NULL, update_slot INTEGER NOT NULL, "
                 "selected_at TEXT NOT NULL, displayed_updated_at TEXT NOT NULL, retrieved_at TEXT NOT NULL, "
                 "usd_thb_per_unit TEXT NOT NULL, sgd_thb_per_unit TEXT NOT NULL, usd_to_sgd TEXT NOT NULL, "
-                "source_url TEXT NOT NULL, currency_column_label TEXT NOT NULL, tt_buying_column_label TEXT NOT NULL, "
-                "usd_currency_label TEXT NOT NULL, usd_column_label TEXT NOT NULL, usd_raw_value TEXT NOT NULL, "
-                "sgd_currency_label TEXT NOT NULL, sgd_column_label TEXT NOT NULL, sgd_raw_value TEXT NOT NULL, "
-                "source_document_sha256 TEXT NOT NULL, source_evidence_sha256 TEXT NOT NULL, content_sha256 TEXT NOT NULL UNIQUE)"
+                "content_sha256 TEXT NOT NULL UNIQUE)"
             )
-            existing = {row[1] for row in connection.execute("PRAGMA table_info(bangkok_bank_rate_snapshots)")}
-            for column in ("source_url", "currency_column_label", "tt_buying_column_label", "usd_currency_label", "usd_column_label", "usd_raw_value", "sgd_currency_label", "sgd_column_label", "sgd_raw_value", "source_document_sha256", "source_evidence_sha256"):
-                if column not in existing:
-                    connection.execute(f"ALTER TABLE bangkok_bank_rate_snapshots ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self._path)
@@ -144,17 +111,13 @@ class BangkokBankRateArchive:
             connection.execute(
                 "INSERT INTO bangkok_bank_rate_snapshots "
                 "(source_date, update_slot, selected_at, displayed_updated_at, retrieved_at, usd_thb_per_unit, "
-                "sgd_thb_per_unit, usd_to_sgd, source_url, currency_column_label, tt_buying_column_label, "
-                "usd_currency_label, usd_column_label, usd_raw_value, sgd_currency_label, sgd_column_label, "
-                "sgd_raw_value, source_document_sha256, source_evidence_sha256, content_sha256) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "sgd_thb_per_unit, usd_to_sgd, content_sha256) VALUES (?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(content_sha256) DO NOTHING",
                 fields,
             )
             row = connection.execute(
                 "SELECT snapshot_id, source_date, update_slot, selected_at, displayed_updated_at, retrieved_at, "
-                "usd_thb_per_unit, sgd_thb_per_unit, usd_to_sgd, source_url, currency_column_label, "
-                "tt_buying_column_label, usd_currency_label, usd_column_label, usd_raw_value, sgd_currency_label, "
-                "sgd_column_label, sgd_raw_value, source_document_sha256, source_evidence_sha256, content_sha256 "
+                "usd_thb_per_unit, sgd_thb_per_unit, usd_to_sgd, content_sha256 "
                 "FROM bangkok_bank_rate_snapshots WHERE content_sha256 = ?",
                 (content_sha256,),
             ).fetchone()
@@ -172,9 +135,7 @@ class BangkokBankRateArchive:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT snapshot_id, source_date, update_slot, selected_at, displayed_updated_at, retrieved_at, "
-                "usd_thb_per_unit, sgd_thb_per_unit, usd_to_sgd, source_url, currency_column_label, "
-                "tt_buying_column_label, usd_currency_label, usd_column_label, usd_raw_value, sgd_currency_label, "
-                "sgd_column_label, sgd_raw_value, source_document_sha256, source_evidence_sha256, content_sha256 "
+                "usd_thb_per_unit, sgd_thb_per_unit, usd_to_sgd, content_sha256 "
                 "FROM bangkok_bank_rate_snapshots WHERE source_date = ? ORDER BY update_slot, snapshot_id",
                 (source_date,),
             ).fetchall()

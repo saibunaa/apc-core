@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from hashlib import sha256
 from typing import Callable, Protocol
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
@@ -61,7 +60,6 @@ class BangkokBankRateFetchSnapshot:
     usd: BangkokBankFetchedRate
     sgd: BangkokBankFetchedRate
     usd_to_sgd: str
-    source_document_sha256: str
 
 
 def _is_bangkok_datetime(value: object) -> bool:
@@ -162,5 +160,4 @@ class BangkokBankRateFetchService:
             usd=_allowlisted_rate(parsed.usd),
             sgd=_allowlisted_rate(parsed.sgd),
             usd_to_sgd=parsed.usd_to_sgd,
-            source_document_sha256=sha256(response.body).hexdigest(),
         )

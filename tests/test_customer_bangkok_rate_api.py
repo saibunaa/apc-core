@@ -38,7 +38,6 @@ class RecordingBangkokRateService:
             usd=BangkokBankFetchedRate("USD: 50-100", "TT Buying", "33.35", "33.35"),
             sgd=BangkokBankFetchedRate("SGD", "TT Buying", "25.60", "25.60"),
             usd_to_sgd="1.302734375",
-            source_document_sha256="a" * 64,
         )
 
 
