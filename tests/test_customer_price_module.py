@@ -161,10 +161,11 @@ class CustomerPriceModuleContractTests(unittest.TestCase):
     def test_loopback_api_and_apple_calm_panel_require_selected_actor_and_explicit_clean_apply(self):
         from http.client import HTTPConnection
         from http.server import ThreadingHTTPServer
+        import io
         import json
         import threading
         from apc_core.customer_price_module import CustomerPriceModule
-        from apc_core.item_explorer import ItemExplorer, make_handler
+        from apc_core.item_explorer import ItemExplorer, _customer_client_allowed, make_handler
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -172,10 +173,22 @@ class CustomerPriceModuleContractTests(unittest.TestCase):
             prices = CustomerPriceModule(source, data_dir=root / "state")
             prices.import_from_snapshot()
             items = ItemExplorer(source, data_dir=root / "state")
+            handler_class = make_handler(items, {"accepted": True}, customer_price_module=prices)
             server = ThreadingHTTPServer(
                 ("127.0.0.1", 0),
-                make_handler(items, {"accepted": True}, customer_price_module=prices),
+                handler_class,
             )
+            denied = object.__new__(handler_class)
+            denied.client_address = ("100.69.141.75", 1)
+            denied.path = "/customer-prices/api/staff"
+            denied.wfile = io.BytesIO()
+            denied_status = []
+            denied.send_response = denied_status.append
+            denied.send_header = lambda *_: None
+            denied.end_headers = lambda: None
+            handler_class.do_GET(denied)
+            self.assertEqual([403], denied_status)
+
             worker = threading.Thread(target=server.serve_forever, daemon=True)
             worker.start()
             try:
@@ -193,6 +206,21 @@ class CustomerPriceModuleContractTests(unittest.TestCase):
                 ):
                     self.assertIn(marker, html)
                 self.assertNotIn("Price Type", html)
+                self.assertFalse(_customer_client_allowed("100.69.141.75", False))
+                self.assertFalse(_customer_client_allowed("192.168.1.246", False))
+                self.assertTrue(_customer_client_allowed("192.168.1.246", True))
+                items._local_store().connection.execute("UPDATE core_users SET active=0 WHERE username='YIM'")
+                items._local_store().connection.commit()
+
+                connection = HTTPConnection(host, port, timeout=3)
+                connection.request("GET", "/customer-prices/api/staff")
+                response = connection.getresponse()
+                staff_payload = json.loads(response.read())
+                connection.close()
+                self.assertEqual(200, response.status)
+                self.assertEqual(["BIAS", "BON", "DERRICK", "WAT", "YA"], [row["username"] for row in staff_payload["staff"]])
+                items._local_store().connection.execute("UPDATE core_users SET active=1 WHERE username='YIM'")
+                items._local_store().connection.commit()
 
                 connection = HTTPConnection(host, port, timeout=3)
                 connection.request("GET", "/customer-prices/api/customers/C-001?q=anub")

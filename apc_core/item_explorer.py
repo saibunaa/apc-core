@@ -740,7 +740,7 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                 self.end_headers()
                 return
             parsed = parsed._replace(path=_canonical_program_path(parsed.path))
-            price_read_path = parsed.path == "/customer-prices/" or parsed.path == "/customer-prices/api/customers" or parsed.path.startswith("/customer-prices/api/customers/")
+            price_read_path = (parsed.path == "/customer-prices/" or parsed.path == "/customer-prices/api/staff" or parsed.path == "/customer-prices/api/customers" or parsed.path.startswith("/customer-prices/api/customers/"))
             if customer_price_module is not None and price_read_path and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
                 self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer price access is loopback-only unless customer LAN ingress is enabled"})
                 return
@@ -763,6 +763,12 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
             if customer_price_module is not None and parsed.path == "/customer-prices/":
                 body = _staff_identity_shell(customer_price_module.html()).encode("utf-8")
                 self.send_response(HTTPStatus.OK); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
+            if customer_price_module is not None and parsed.path == "/customer-prices/api/staff":
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"staff": [{"username": username, "role": role} for username, role in explorer._local_store().active_staff()]},
+                )
+                return
             if customer_price_module is not None and parsed.path == "/customer-prices/api/customers":
                 self._send_json(HTTPStatus.OK, {"customer_codes": customer_price_module.customer_codes()})
                 return
