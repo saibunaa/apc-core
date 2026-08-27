@@ -728,6 +728,8 @@ class TestCustomerExplorerContract(unittest.TestCase):
                 self.assertIn("[additional,noteOrder,noteInvoice].forEach", html)
                 self.assertIn("event.key==='Tab'", html)
                 self.assertIn("document.activeElement===last", html)
+                self.assertIn("commitCustomerCode", html)
+                self.assertIn("event.key==='Tab'", html)
                 self.assertNotIn('Order Entry UI', html)
 
                 connection = HTTPConnection(host, port, timeout=3)

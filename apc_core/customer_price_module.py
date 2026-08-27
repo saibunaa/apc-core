@@ -283,7 +283,7 @@ class CustomerPriceModule:
         seen: set[str] = set()
         current = {row[0]: row[1] for row in self._store.connection.execute("SELECT item_id,price FROM customer_price_rows WHERE customer_code=? AND active=1", (customer,))}
         for line_number, line in enumerate(data_lines, start=data_start):
-            cells = line.split("\t")
+            cells = line.split("\t") if "\t" in line else line.strip().split()
             if len(cells) != 2:
                 invalid.append({"line": line_number, "reason": "expected_two_columns"})
                 continue

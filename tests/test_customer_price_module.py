@@ -121,9 +121,11 @@ class CustomerPriceModuleContractTests(unittest.TestCase):
             prices.import_from_snapshot()
 
             headerless = prices.preview_tsv("C-001", "IT-001\t14.00\nIT-002\t22\n")
+            spaced = prices.preview_tsv("C-001", "IT-001 14.00\nIT-002 22\n")
             headed = prices.preview_tsv("C-001", " item id \t PRICE \nIT-001\t14.00\n")
 
             self.assertEqual(["IT-001", "IT-002"], [row["item_id"] for row in headerless["valid"]])
+            self.assertEqual(["IT-001", "IT-002"], [row["item_id"] for row in spaced["valid"]])
             self.assertEqual([1, 2], [row["line"] for row in headerless["valid"]])
             self.assertEqual(["IT-001"], [row["item_id"] for row in headed["valid"]])
             self.assertEqual([2], [row["line"] for row in headed["valid"]])
