@@ -112,6 +112,38 @@ class CustomerPriceModuleContractTests(unittest.TestCase):
             )
             self.assertNotIn("Price Type", repr(prices.activity("C-001")))
 
+    def test_tsv_preview_accepts_item_id_price_rows_without_a_header_and_ignores_a_conventional_header(self):
+        from apc_core.customer_price_module import CustomerPriceModule
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prices = CustomerPriceModule(self.make_snapshot(root), data_dir=root / "state")
+            prices.import_from_snapshot()
+
+            headerless = prices.preview_tsv("C-001", "IT-001\t14.00\nIT-002\t22\n")
+            headed = prices.preview_tsv("C-001", " item id \t PRICE \nIT-001\t14.00\n")
+
+            self.assertEqual(["IT-001", "IT-002"], [row["item_id"] for row in headerless["valid"]])
+            self.assertEqual([1, 2], [row["line"] for row in headerless["valid"]])
+            self.assertEqual(["IT-001"], [row["item_id"] for row in headed["valid"]])
+            self.assertEqual([2], [row["line"] for row in headed["valid"]])
+
+    def test_customer_price_html_is_keyboard_first_with_autocomplete_edit_mode_and_modal_bulk_paste(self):
+        from apc_core.customer_price_module import CustomerPriceModule
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prices = CustomerPriceModule(self.make_snapshot(Path(tmp)), data_dir=Path(tmp) / "state")
+            html = prices.html()
+
+        for marker in (
+            'role="combobox"', 'aria-autocomplete="list"', 'list="customer-options"',
+            'id="customer-options"', 'Edit prices', 'Bulk edit', 'role="dialog"',
+            'aria-modal="true"', 'header row is optional', 'addEventListener("keydown"',
+            'Escape', 'editMode', 'bulk-dialog',
+        ):
+            self.assertIn(marker, html)
+        self.assertNotIn('class="paste', html)
+
     def test_tsv_preview_classifies_valid_invalid_unknown_duplicate_and_changes_without_mutating_until_apply(self):
         from apc_core.customer_price_module import CustomerPriceModule
 
@@ -200,9 +232,9 @@ class CustomerPriceModuleContractTests(unittest.TestCase):
                 connection.close()
                 self.assertEqual(200, response.status)
                 for marker in (
-                    "Customer Price", "Customer Code", "Search item-price rows", "Paste Excel TSV",
-                    "Preview", "Apply", "textContent", "window.apcCoreActiveStaff", "soft-brutalist",
-                    "preview_id", "tsv.oninput", "row.before", "row.after",
+                    "Customer Price", "Customer Code", "Search item-price rows", "Bulk edit prices",
+                    "Preview", "Apply", "textContent", "window.apcCoreActiveStaff",
+                    "preview_id", "tsv.oninput", "r.before", "r.after",
                 ):
                     self.assertIn(marker, html)
                 self.assertNotIn("Price Type", html)
