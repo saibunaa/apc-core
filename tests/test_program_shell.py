@@ -27,7 +27,7 @@ class ProgramShellTests(unittest.TestCase):
             for marker in (
                 'id="identity-confirm"',
                 'Choose user',
-                'Confirm user',
+                'Continue',
                 'Change user',
                 'attribution only',
                 'not security, authentication, or authorization',
@@ -41,6 +41,11 @@ class ProgramShellTests(unittest.TestCase):
             self.assertNotIn('href="/customers/"', html)
 
         self.assertTrue(all(html.count('const key="apc-core-identity"') == 1 for html in pages))
+        self.assertTrue(all(html.count('Change user') == 1 for html in pages))
+        self.assertTrue(all('class="identity-card"' in html for html in pages))
+        item_html = _item_explorer_html()
+        self.assertNotIn("$('#change-user')", item_html)
+        self.assertNotIn("$('#change-user').onclick", item_html)
 
     def test_change_user_revokes_the_shared_identity_before_reconfirmation(self):
         for html in (_menu_html(), _item_explorer_html(), _customer_explorer_html()):
