@@ -68,6 +68,49 @@ class ServerContractTests(unittest.TestCase):
             self.assertEqual("C-001", customers.search()["customers"][0]["customer_id"])
             self.assertEqual("12", prices.search("C-001")["rows"][0]["price"])
 
+    def test_customer_price_runtime_startup_is_a_noop_for_an_already_reconciled_accepted_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "price-source.sqlite"
+            self.make_snapshot(source, "IT-001")
+            connection = sqlite3.connect(source)
+            connection.execute('INSERT INTO "MainDB__CUST" VALUES (?, ?)', ("C-DUP", "Duplicate"))
+            connection.execute('INSERT INTO "MainDB__CUST" VALUES (?, ?)', ("C-DUP", "Duplicate"))
+            connection.execute('INSERT INTO "MainDB__CUST_PRC" VALUES (?, ?, ?)', ("C-001", "IT-UNKNOWN", "12"))
+            connection.commit()
+            connection.close()
+            manifest_path = root / "state" / "accepted_snapshot.json"
+            certify_snapshot(source, manifest_path, "2026-08-25T13:00:00Z", customer_ready=True)
+            data_dir = root / "core-state"
+
+            from apc_core import server
+            items, customers, prices, _ = server.load_accepted_customer_price_runtime(manifest_path, data_dir=data_dir)
+            self.assertEqual(1, customers.search()["total"])
+            with self.assertRaises(ValueError):
+                customers.edit("C-001", {}, None)
+            items.close(); customers.close(); prices.close()
+            first = sqlite3.connect(data_dir / "apc_core.sqlite")
+            first_counts = {
+                table: first.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                for table in ("customer_quarantine", "customer_price_quarantine")
+            }
+            first.close()
+
+            items, customers, prices, _ = server.load_accepted_customer_price_runtime(manifest_path, data_dir=data_dir)
+            self.assertEqual(1, customers.search()["total"])
+            with self.assertRaises(ValueError):
+                customers.edit("C-001", {}, None)
+            items.close(); customers.close(); prices.close()
+            second = sqlite3.connect(data_dir / "apc_core.sqlite")
+            second_counts = {
+                table: second.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                for table in ("customer_quarantine", "customer_price_quarantine")
+            }
+            second.close()
+
+            self.assertEqual({"customer_quarantine": 2, "customer_price_quarantine": 1}, first_counts)
+            self.assertEqual(first_counts, second_counts)
+
     def test_customer_runtime_rejects_forged_customer_ready_metadata_over_wrong_customer_schema(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

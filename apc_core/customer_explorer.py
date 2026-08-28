@@ -217,7 +217,10 @@ class CustomerExplorer:
     def _ensure_loaded(self) -> None:
         with self._lock:
             if not self._snapshot_reconciled:
-                self.backfill_from_snapshot()
+                if self._local_store().reconciled_source_sha256() != self._source_sha256:
+                    self.backfill_from_snapshot()
+                else:
+                    self._snapshot_reconciled = True
 
     def _upsert_source_children(self, customer_id: str, configs: list[dict[str, str]], consignees: list[dict[str, str]], notes: list[dict[str, str]], counts: dict[str, int]) -> None:
         store = self._local_store(); con = store.connection
