@@ -652,9 +652,14 @@ def _menu_html_body_existing() -> str:
 
 
 def _menu_html_body() -> str:
-    return _menu_html_body_existing().replace(
+    body = _menu_html_body_existing().replace(
+        '<div class="card soon"><div><h2>Orders</h2><p>Order work will appear here.</p></div><span class="label">Coming soon</span></div>',
+        "",
+        1,
+    )
+    return body.replace(
         '<section class="grid" aria-label="APC Core modules">',
-        '<section class="grid" aria-label="APC Core modules"><a class="card mint" href="orders/"><div><span class="label">Read-only</span><h2>Order Forms</h2><p>Open and review saved order forms and customer templates.</p></div><span class="open">Open Order Forms →</span></a>',
+        '<section class="grid" aria-label="APC Core modules"><a class="card mint" href="orders/"><div><span class="label">Read-only</span><h2>Orders</h2><p>Open and review saved order forms and customer templates.</p></div><span class="open">Open Orders →</span></a>',
         1,
     )
 
@@ -836,6 +841,12 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
             if parsed.path == "/":
                 body = _menu_html().encode("utf-8")
                 self.send_response(HTTPStatus.OK); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
+            if order_explorer is not None and parsed.path == "/orders":
+                self.send_response(HTTPStatus.PERMANENT_REDIRECT)
+                self.send_header("Location", "orders/")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
             if order_explorer is not None and parsed.path == "/orders/":
                 self._send_html(HTTPStatus.OK, _order_explorer_html())
                 return

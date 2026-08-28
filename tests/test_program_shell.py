@@ -260,6 +260,11 @@ class ProgramShellTests(unittest.TestCase):
                     response = connection.getresponse(); payload = response.read(); connection.close()
                     self.assertEqual(expected, response.status, path)
                     self.assertTrue(payload)
+                connection = HTTPConnection("127.0.0.1", port, timeout=3)
+                connection.request("GET", "/program/orders")
+                response = connection.getresponse(); response.read(); location = response.getheader("Location"); connection.close()
+                self.assertEqual(308, response.status)
+                self.assertEqual("orders/", location)
                 for method in ("POST", "PUT", "PATCH", "DELETE"):
                     connection = HTTPConnection("127.0.0.1", port, timeout=3)
                     connection.request(method, "/program/orders/api/orders", b"{}", {"Content-Type": "application/json"})
@@ -325,6 +330,9 @@ class ProgramShellTests(unittest.TestCase):
         ):
             self.assertIn(marker, html)
         self.assertIn('href="orders/"', _menu_html_body())
+        self.assertIn("<h2>Orders</h2>", _menu_html_body())
+        self.assertNotIn("Order work will appear here.", _menu_html_body())
+        self.assertNotIn('<div class="card soon"><div><h2>Orders</h2>', _menu_html_body())
         self.assertNotIn("innerHTML", html)
         self.assertNotIn("fetch('/", html)
         self.assertNotRegex(html, r"fetch\([^)]*method\s*:")
