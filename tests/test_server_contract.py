@@ -111,6 +111,36 @@ class ServerContractTests(unittest.TestCase):
             self.assertEqual({"customer_quarantine": 2, "customer_price_quarantine": 1}, first_counts)
             self.assertEqual(first_counts, second_counts)
 
+    def test_customer_price_runtime_adopts_verified_legacy_artifact_without_reimporting_quarantine_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "price-source.sqlite"
+            self.make_snapshot(source, "IT-001")
+            connection = sqlite3.connect(source)
+            connection.execute('INSERT INTO "MainDB__CUST_PRC" VALUES (?, ?, ?)', ("C-001", "IT-UNKNOWN", "12"))
+            connection.commit()
+            connection.close()
+            manifest_path = root / "state" / "accepted_snapshot.json"
+            certify_snapshot(source, manifest_path, "2026-08-25T13:00:00Z", customer_ready=True)
+            data_dir = root / "core-state"
+
+            from apc_core import server
+            items, customers, prices, _ = server.load_accepted_customer_price_runtime(manifest_path, data_dir=data_dir)
+            items.close(); customers.close(); prices.close()
+            with sqlite3.connect(data_dir / "apc_core.sqlite") as legacy:
+                legacy.execute("DELETE FROM customer_price_reconciliation_state")
+                before = legacy.execute("SELECT count(*) FROM customer_price_quarantine").fetchone()[0]
+
+            items, customers, prices, _ = server.load_accepted_customer_price_runtime(manifest_path, data_dir=data_dir)
+            self.assertEqual("ready", prices.reconciliation_status()["state"])
+            items.close(); customers.close(); prices.close()
+            with sqlite3.connect(data_dir / "apc_core.sqlite") as upgraded:
+                after = upgraded.execute("SELECT count(*) FROM customer_price_quarantine").fetchone()[0]
+                state = upgraded.execute("SELECT source_artifact_sha256 FROM customer_price_reconciliation_state WHERE singleton=1").fetchone()
+
+            self.assertEqual(before, after)
+            self.assertIsNotNone(state)
+
     def test_customer_runtime_rejects_forged_customer_ready_metadata_over_wrong_customer_schema(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
