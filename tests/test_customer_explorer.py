@@ -424,7 +424,7 @@ class TestCustomerExplorerContract(unittest.TestCase):
                 self.assertIn("[['Basic',basic],['Additional',additional],['Note - Order',noteOrder],['Note - Invoice',noteInvoice]]", html)
                 self.assertIn("Manage Order Notes", html)
                 self.assertIn("Manage Invoice Notes", html)
-                self.assertIn("edit ? actions.append(noteActions(c.customer_id))", html)
+                self.assertIn("edit ? actions.append(...noteActions(c.customer_id))", html)
                 self.assertIn("function notePanel(", html)
                 self.assertIn("panel.dataset.tab='note-'+kind", html)
                 self.assertNotIn("Order Entry UI", html)
