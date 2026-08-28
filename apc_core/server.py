@@ -142,6 +142,14 @@ def load_accepted_customer_price_runtime(manifest_path: Path, *, data_dir: Path 
         os.close(descriptor)
 
 
+def allowed_mutation_origins(*, container_ingress: bool) -> frozenset[str] | None:
+    configured = os.environ.get("APC_CORE_ALLOWED_MUTATION_ORIGINS", "")
+    origins = frozenset(origin.strip() for origin in configured.split(",") if origin.strip())
+    if container_ingress and not origins:
+        raise RuntimeContractError("container ingress requires explicit approved Program mutation origin")
+    return origins or None
+
+
 def recovery_test_mode(*, data_dir: Path) -> tuple[RecoveryAuthorizer | None, RecoveryService | None]:
     """Enable the recovery panel only for an explicitly PIN-configured isolated test process."""
     pin = os.environ.get("APC_CORE_RECOVERY_TEST_PIN")
@@ -169,6 +177,10 @@ def main() -> None:
     data_dir = Path(os.environ["APC_CORE_DATA_DIR"]) if os.environ.get("APC_CORE_DATA_DIR") else None
     if recovery_enabled and data_dir is None:
         parser.error("APC_CORE_DATA_DIR is required for isolated recovery test mode")
+    try:
+        mutation_origins = allowed_mutation_origins(container_ingress=args.container_ingress)
+    except RuntimeContractError as error:
+        parser.error(str(error))
     recovery_authorizer, recovery_service = recovery_test_mode(data_dir=data_dir or Path("."))
     item_explorer, customer_explorer, customer_price_module, manifest = load_accepted_customer_price_runtime(args.manifest, data_dir=data_dir)
     def close_core_modules_for_recovery() -> None:
@@ -179,6 +191,7 @@ def main() -> None:
 
     server = ThreadingHTTPServer((args.host, args.port), make_handler(
         item_explorer, manifest, customer_explorer, customer_price_module, customer_lan_ingress=args.container_ingress,
+        allowed_mutation_origins=mutation_origins,
         recovery_authorizer=recovery_authorizer, recovery_service=recovery_service,
         recovery_maintenance=close_core_modules_for_recovery if recovery_service is not None else None,
     ))

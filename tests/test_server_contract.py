@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from apc_core.server import RuntimeContractError, load_accepted_runtime
 from apc_core.snapshot_contract import certify_snapshot
@@ -169,9 +170,10 @@ class ServerContractTests(unittest.TestCase):
         import sys
         from unittest.mock import patch
         from apc_core import server
-        with patch.object(sys, "argv", ["server", "--manifest", "missing.json", "--host", "0.0.0.0", "--container-ingress"]):
-            with self.assertRaises(RuntimeContractError):
-                server.main()
+        with patch.dict(os.environ, {"APC_CORE_ALLOWED_MUTATION_ORIGINS": "http://192.168.1.246"}, clear=True):
+            with patch.object(sys, "argv", ["server", "--manifest", "missing.json", "--host", "0.0.0.0", "--container-ingress"]):
+                with self.assertRaises(RuntimeContractError):
+                    server.main()
 
     def test_rejects_server_source_that_does_not_match_accepted_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -193,6 +195,14 @@ class ServerContractTests(unittest.TestCase):
             with patch.object(sys, "argv", ["server", "--manifest", "missing.json", "--host", "0.0.0.0", "--container-ingress"]):
                 with self.assertRaises(SystemExit):
                     server.main()
+
+    def test_container_ingress_requires_explicit_approved_mutation_origin(self):
+        from apc_core import server
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(RuntimeContractError):
+                server.allowed_mutation_origins(container_ingress=True)
+        with patch.dict(os.environ, {"APC_CORE_ALLOWED_MUTATION_ORIGINS": "http://192.168.1.246"}, clear=True):
+            self.assertEqual(frozenset({"http://192.168.1.246"}), server.allowed_mutation_origins(container_ingress=True))
 
     def test_recovery_test_mode_is_disabled_without_a_pin_and_local_only_with_an_explicit_pin(self):
         from unittest.mock import patch

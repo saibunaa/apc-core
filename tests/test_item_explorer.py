@@ -325,6 +325,30 @@ class ItemExplorerTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
 
+    def test_item_mutation_rejects_cross_origin_and_non_json_requests_before_writing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_snapshot(root)
+            explorer = ItemExplorer(source, data_dir=root / "core-state")
+            from http.server import ThreadingHTTPServer
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(explorer, {"accepted": True}))
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                host, port = server.server_address
+                payload = json.dumps({"description": "blocked", "actor": "YIM"})
+                for headers, expected in (
+                    ({"Content-Type": "text/plain", "Origin": "https://evil.example"}, 415),
+                    ({"Content-Type": "application/json", "Origin": "https://evil.example"}, 403),
+                ):
+                    conn = HTTPConnection(host, port, timeout=3)
+                    conn.request("POST", "/api/items/IT-001", payload, headers)
+                    self.assertEqual(expected, conn.getresponse().status)
+                    conn.close()
+                self.assertEqual(0, explorer.activity_count())
+            finally:
+                server.shutdown(); server.server_close()
+
     def test_verified_snapshot_mapping_and_conflict_safe_backfill_preserve_core_override(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -469,8 +493,8 @@ class ItemExplorerTests(unittest.TestCase):
                 conn = HTTPConnection(host, port, timeout=3)
                 conn.request("POST", "/api/items")
                 response = conn.getresponse()
-                self.assertEqual(400, response.status)
-                self.assertEqual({"error": "invalid item create"}, json.loads(response.read()))
+                self.assertEqual(415, response.status)
+                self.assertEqual({"error": "application/json is required"}, json.loads(response.read()))
                 conn.close()
             finally:
                 server.shutdown()
