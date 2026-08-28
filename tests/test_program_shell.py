@@ -56,6 +56,22 @@ class ProgramShellTests(unittest.TestCase):
         handler_source = inspect.getsource(make_handler)
         self.assertIn('body = _staff_identity_shell(customer_price_module.html()).encode("utf-8")', handler_source)
 
+    def test_identity_picker_uses_large_colored_rounded_square_staff_tiles_without_changing_attribution_contract(self):
+        for html in (_menu_html(), _item_explorer_html(), _customer_explorer_html()):
+            for marker in (
+                "Who’s using APC Program?",
+                ".identity-picker-screen",
+                "grid-template-columns:repeat(auto-fit,minmax(150px,1fr))",
+                "aspect-ratio:1",
+                ".identity-tile:nth-child(4n+1)",
+                "box-shadow:6px 6px 0",
+                "border-radius:22px",
+                "@media(max-width:620px)",
+            ):
+                self.assertIn(marker, html)
+            self.assertIn("Activity attribution only", html)
+            self.assertIn("not security, authentication, or authorization", html)
+
     def test_identity_tiles_activate_only_on_click_or_enter_space_and_roam_with_arrows(self):
         html = _item_explorer_html()
         for marker in (
@@ -80,6 +96,8 @@ class ProgramShellTests(unittest.TestCase):
             self.assertIn('id="identity-change-user"', html)
             self.assertIn('change.hidden=!value', html)
             self.assertIn('function choose(){apply("");picker.hidden=false;content.hidden=true;', html)
+            self.assertIn('html.apc-core-known-user #identity-confirm{background:transparent;pointer-events:none}', html)
+            self.assertIn('.identity-action{pointer-events:auto;position:fixed;', html)
             self.assertNotIn('html.apc-core-known-user #identity-confirm{display:none}', html)
             self.assertIn('window.dispatchEvent(new CustomEvent("apc-core-identity",{detail:value||""}))', html)
 
