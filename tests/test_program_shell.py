@@ -97,13 +97,33 @@ class ProgramShellTests(unittest.TestCase):
             self.assertIn('change.hidden=!value', html)
             self.assertIn('function choose(){apply("");picker.hidden=false;content.hidden=true;', html)
             self.assertIn('html.apc-core-known-user #identity-confirm{background:transparent;pointer-events:none}', html)
-            self.assertIn('.identity-action{pointer-events:auto;position:fixed;', html)
+            self.assertIn('.identity-action,.back{pointer-events:auto;position:fixed;top:16px;z-index:11;display:inline-flex;align-items:center;', html)
             self.assertNotIn('html.apc-core-known-user #identity-confirm{display:none}', html)
             self.assertIn('window.dispatchEvent(new CustomEvent("apc-core-identity",{detail:value||""}))', html)
 
+    def test_navigation_and_identity_polish_use_warm_non_hovering_shared_controls(self):
+        pages = (_menu_html(), _item_explorer_html(), _customer_explorer_html())
+        for html in pages:
+            self.assertIn('body{background:#f7f0e5', html)
+            self.assertIn('.identity-picker-screen{position:fixed', html)
+            self.assertIn('transparent 30%),#f7f0e5', html)
+            self.assertIn('.identity-tile:hover{transform:none;box-shadow:6px 6px 0 #24272b;outline:none}', html)
+            self.assertIn('.identity-tile:focus-visible{transform:translate(-2px,-2px);box-shadow:9px 9px 0 #24272b;outline:3px solid #174d3e;outline-offset:3px}', html)
+            self.assertIn('.identity-action,.back{pointer-events:auto;position:fixed;top:16px;z-index:11;', html)
+            self.assertIn('background:#f7c948', html)
+            self.assertIn('border:3px solid #24272b', html)
+            self.assertIn('box-shadow:4px 4px 0 #24272b', html)
+            self.assertIn('.identity-action{right:16px}', html)
+            self.assertIn('.back{left:16px}', html)
+            self.assertIn('.back+h1,.back+.top{margin-top:74px}', html)
+
+        for html in (_item_explorer_html(), _customer_explorer_html()):
+            self.assertIn('class="back" href="../">Main menu</a>', html)
+            self.assertNotIn('← APC Core', html)
+
     def test_customer_workspace_keeps_profile_visible_and_does_not_force_page_scroll(self):
         html = _customer_explorer_html()
-        for marker in (".profile{position:sticky", ".back{position:sticky", 'class="back" href="../"', "@media(max-width:760px){.shell{padding:12px}.workspace{grid-template-columns:1fr}.profile{position:static;align-self:auto;border:0;border-top:1px solid var(--line)}", "← APC Core"):
+        for marker in (".profile{position:sticky", ".back{left:16px}", 'class="back" href="../"', "@media(max-width:760px){.shell{padding:12px}.workspace{grid-template-columns:1fr}.profile{position:static;align-self:auto;border:0;border-top:1px solid var(--line)}", "Main menu"):
             self.assertIn(marker, html)
         self.assertNotIn("scrollIntoView", html)
         self.assertNotIn("window.scrollTo", html)
