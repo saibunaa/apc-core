@@ -214,7 +214,7 @@ class ProgramShellTests(unittest.TestCase):
 
     def test_main_menu_shares_the_warm_cream_shell_background(self):
         html = _menu_html_body()
-        self.assertIn("--canvas:#faf7f2", html)
+        self.assertIn("--canvas:#eadbc8", html)
         self.assertNotIn("#f5f5f7", html)
         # Clickable modules are fixed, low-saturation soft bricks for spatial memory.
         self.assertIn("--paper:#fff", html)
@@ -239,7 +239,7 @@ class ProgramShellTests(unittest.TestCase):
         self.assertNotIn("decor-shape", html)
         self.assertNotIn("<svg", html)
         self.assertNotIn("<path", html)
-        self.assertIn("--canvas:#faf7f2", html)
+        self.assertIn("--canvas:#eadbc8", html)
         self.assertIn(".shell{max-width:900px;margin:auto;padding:56px 24px;position:relative;z-index:1}", html)
         self.assertIn("background:var(--paper)", html)
         self.assertIn('href="customer-prices/"', html)
