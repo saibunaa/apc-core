@@ -63,7 +63,7 @@ class ProgramShellTests(unittest.TestCase):
                 ".identity-picker-screen",
                 "grid-template-columns:repeat(auto-fit,minmax(150px,1fr))",
                 "aspect-ratio:1",
-                ".identity-tile:nth-child(4n+1)",
+                ".identity-tone-1{background:#f7c948}",
                 "box-shadow:6px 6px 0",
                 "border-radius:22px",
                 "@media(max-width:620px)",
@@ -101,14 +101,20 @@ class ProgramShellTests(unittest.TestCase):
             self.assertNotIn('html.apc-core-known-user #identity-confirm{display:none}', html)
             self.assertIn('window.dispatchEvent(new CustomEvent("apc-core-identity",{detail:value||""}))', html)
 
-    def test_navigation_and_identity_polish_use_warm_non_hovering_shared_controls(self):
+    def test_navigation_and_identity_polish_lift_on_hover_and_rotate_tile_colors_per_visit(self):
         pages = (_menu_html(), _item_explorer_html(), _customer_explorer_html())
         for html in pages:
             self.assertIn('body{background:#f7f0e5', html)
             self.assertIn('.identity-picker-screen{position:fixed', html)
             self.assertIn('transparent 30%),#f7f0e5', html)
-            self.assertIn('.identity-tile:hover{transform:none;box-shadow:6px 6px 0 #24272b;outline:none}', html)
+            self.assertIn('.identity-tile:hover{transform:translate(-2px,-2px);box-shadow:8px 8px 0 #24272b;outline:none}', html)
+            self.assertIn('.identity-action:hover,.back:hover{transform:translate(-2px,-2px);box-shadow:6px 6px 0 #24272b}', html)
             self.assertIn('.identity-tile:focus-visible{transform:translate(-2px,-2px);box-shadow:9px 9px 0 #24272b;outline:3px solid #174d3e;outline-offset:3px}', html)
+            self.assertIn('colorVisitKey="apc-core-identity-color-visit"', html)
+            self.assertIn('if(!Number.isFinite(colorVisit))colorVisit=0', html)
+            self.assertIn('tile.classList.add("identity-tone-"+((index+colorVisit)%4+1))', html)
+            self.assertIn('.identity-tone-1{background:#f7c948}', html)
+            self.assertIn('.identity-tone-4{background:#a9c9f4}', html)
             self.assertIn('.identity-action,.back{pointer-events:auto;position:fixed;top:16px;z-index:11;', html)
             self.assertIn('background:#f7c948', html)
             self.assertIn('border:3px solid #24272b', html)
@@ -193,43 +199,15 @@ class ProgramShellTests(unittest.TestCase):
         self.assertIn('href="customer-prices/"', html)
         self.assertIn("<h2>Customer Prices</h2><p>Search and safely edit imported customer-item price rows.</p></div><span class=\"open\">Open Customer Price →</span>", html)
 
-    def test_main_menu_decoration_is_inert_low_contrast_and_confined_to_the_menu(self):
+    def test_main_menu_has_no_botanical_or_plant_silhouette_background(self):
         html = _menu_html_body()
-        # Inert: aria-hidden, non-focusable, pointer-events:none, never in tab order.
-        self.assertIn('<div class="menu-decor" aria-hidden="true">', html)
-        self.assertIn('focusable="false"', html)
-        self.assertNotIn("tabindex", html)
-        self.assertIn(".menu-decor{", html)
-        self.assertIn("pointer-events:none", html)
-        # 3-4 static, flat, low-contrast aquatic/botanical silhouette paths; no network assets.
-        shape_count = html.count('<path class="decor-shape"')
-        self.assertGreaterEqual(shape_count, 3)
-        self.assertLessEqual(shape_count, 4)
-        self.assertNotIn("url(http", html)
-        self.assertNotIn("<image", html)
-        # Fixed low-opacity token in the muted range, same-hue tint (existing accent, no new saturated color).
-        self.assertIn("--decor-opacity:.06", html)
-        self.assertIn("opacity:var(--decor-opacity)", html)
-        self.assertIn(".decor-shape{fill:var(--blue)}", html)
-        # Behind the module grid / in the outer gutters, never inside a card hit area; cards stay opaque and on top.
-        decor_rule = ".menu-decor{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:var(--decor-opacity);overflow:hidden;mask-image:radial-gradient(circle at 50% 45%,transparent 0,transparent 38%,#000 70%);-webkit-mask-image:radial-gradient(circle at 50% 45%,transparent 0,transparent 38%,#000 70%)}"
-        self.assertIn(decor_rule, html)
+        self.assertNotIn("menu-decor", html)
+        self.assertNotIn("decor-shape", html)
+        self.assertNotIn("<svg", html)
+        self.assertNotIn("<path", html)
+        self.assertIn("--canvas:#faf7f2", html)
         self.assertIn(".shell{max-width:900px;margin:auto;padding:56px 24px;position:relative;z-index:1}", html)
         self.assertIn("background:var(--paper)", html)
-        # Bleeds only from the bottom/side edges; the content center stays clear.
-        self.assertIn("mask-image:radial-gradient(circle at 50% 45%,transparent 0,transparent 38%", html)
-        # No shadows, animation, hover behavior, or cursor changes on the decoration
-        # (the exact decor_rule match above already excludes any extra declarations).
-        self.assertNotIn(".menu-decor:hover", html)
-        self.assertNotIn(".decor-shape:hover", html)
-        self.assertNotIn("@keyframes", html)
-        # Hidden at narrow mobile widths and for forced-colors / prefers-contrast:more users.
-        self.assertIn("@media(max-width:620px){.grid{grid-template-columns:1fr}.menu-decor{display:none}}", html)
-        self.assertIn("@media(forced-colors:active),(prefers-contrast:more){.menu-decor{display:none}}", html)
-        # Confined to the Main Menu route only.
-        self.assertNotIn("menu-decor", _item_explorer_html())
-        self.assertNotIn("menu-decor", _customer_explorer_html())
-        # No Customer Price card/link/content change.
         self.assertIn('href="customer-prices/"', html)
         self.assertIn("<h2>Customer Prices</h2><p>Search and safely edit imported customer-item price rows.</p></div><span class=\"open\">Open Customer Price →</span>", html)
 
