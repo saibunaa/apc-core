@@ -25,19 +25,19 @@ def _order_snapshot(root: Path) -> Path:
     source = root / "orders.sqlite"
     connection = sqlite3.connect(source)
     for table, definition in {
-        "MainDB__ORDER": '"Order No" TEXT, "Order Date" TEXT, "Cust ID" TEXT, "Customer Name" TEXT',
+        "MainDB__ORDER": '"Order No" TEXT, "Order Date" TEXT, "Cust ID" TEXT',
         "MainDB__ORDER_ITEM": '"Order No" TEXT, "Line No" TEXT, "Item ID" TEXT, "Qty" TEXT',
-        "MainDB__CUST": '"Cust ID" TEXT, "Name" TEXT',
-        "MainDB__CUST_CON": '"Cust ID" TEXT, "Order Config" TEXT, "Invoice Config" TEXT',
+        "MainDB__CUST": '"Cust ID" TEXT, "Name" TEXT, "Inv Type" TEXT',
+        "MainDB__CUST_CON": '"Cust ID" TEXT, "Com Code" TEXT',
         "MainDB__CUST_CONSIGNEE": '"Cust ID" TEXT, "Consignee" TEXT',
         "MainDB__CUST_NOTE": '"Cust ID" TEXT, "Order" TEXT, "Invoice" TEXT',
         "MainDB__ITEM": '"Item ID" TEXT, "Description" TEXT, "Description TH" TEXT',
     }.items():
         connection.execute(f'CREATE TABLE "{table}" ({definition})')
-    connection.execute('INSERT INTO "MainDB__ORDER" VALUES (?, ?, ?, ?)', ("ORD/1", "2026-08-29", "C/1", "Customer One"))
-    connection.execute('INSERT INTO "MainDB__ORDER_ITEM" VALUES (?, ?, ?, ?)', ("ORD/1", "1", "IT-1", "2"))
-    connection.execute('INSERT INTO "MainDB__CUST" VALUES (?, ?)', ("C/1", "Customer One"))
-    connection.execute('INSERT INTO "MainDB__CUST_CON" VALUES (?, ?, ?)', ("C/1", "order config", "invoice config"))
+    connection.execute('INSERT INTO "MainDB__ORDER" VALUES (?, ?, ?)', ("ORD/1", "2026-08-29", "C/1"))
+    connection.execute('INSERT INTO "MainDB__ORDER_ITEM" VALUES (?, ?, ?, ?)', ("ORD/1", "1", "I/1", "1"))
+    connection.execute('INSERT INTO "MainDB__CUST" VALUES (?, ?, ?)', ("C/1", "Customer One", "invoice config"))
+    connection.execute('INSERT INTO "MainDB__CUST_CON" VALUES (?, ?)', ("C/1", "order config"))
     connection.execute('INSERT INTO "MainDB__CUST_CONSIGNEE" VALUES (?, ?)', ("C/1", "Bangkok"))
     connection.execute('INSERT INTO "MainDB__CUST_NOTE" VALUES (?, ?, ?)', ("C/1", "order note", "invoice note"))
     connection.execute('INSERT INTO "MainDB__ITEM" VALUES (?, ?, ?)', ("IT-1", "Item one", "สินค้า"))
@@ -291,8 +291,8 @@ class ProgramShellTests(unittest.TestCase):
             source = _order_snapshot(root)
             connection = sqlite3.connect(source)
             connection.executemany(
-                'INSERT INTO "MainDB__CUST" VALUES (?, ?)',
-                [("C/NO-ORDER", "No order customer"), ("C/NO-OTHER", "Another no order customer")],
+                'INSERT INTO "MainDB__CUST" VALUES (?, ?, ?)',
+                [("C/NO-ORDER", "No order customer", "invoice config"), ("C/NO-OTHER", "Another no order customer", "")],
             )
             connection.commit(); connection.close()
             explorer = ItemExplorer(_snapshot(root), data_dir=root / "state")

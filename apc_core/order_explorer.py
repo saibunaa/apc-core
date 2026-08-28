@@ -13,10 +13,10 @@ from pathlib import Path
 
 
 _REQUIRED_COLUMNS = {
-    "MainDB__ORDER": ("Order No", "Order Date", "Cust ID", "Customer Name"),
+    "MainDB__ORDER": ("Order No", "Order Date", "Cust ID"),
     "MainDB__ORDER_ITEM": ("Order No", "Line No", "Item ID", "Qty"),
-    "MainDB__CUST": ("Cust ID", "Name"),
-    "MainDB__CUST_CON": ("Cust ID", "Order Config", "Invoice Config"),
+    "MainDB__CUST": ("Cust ID", "Name", "Inv Type"),
+    "MainDB__CUST_CON": ("Cust ID", "Com Code"),
     "MainDB__CUST_CONSIGNEE": ("Cust ID", "Consignee"),
     "MainDB__CUST_NOTE": ("Cust ID", "Order", "Invoice"),
     "MainDB__ITEM": ("Item ID", "Description", "Description TH"),
@@ -121,19 +121,20 @@ class OrderExplorer:
         clauses: list[str] = []
         parameters: list[str] = []
         if customer:
-            clauses.append('("Cust ID" = ? OR "Customer Name" = ?)')
+            clauses.append('(o."Cust ID" = ? OR c."Name" = ?)')
             parameters.extend((customer, customer))
         if date_from:
-            clauses.append('"Order Date" >= ?')
+            clauses.append('o."Order Date" >= ?')
             parameters.append(date_from)
         if date_to:
-            clauses.append('"Order Date" <= ?')
+            clauses.append('o."Order Date" <= ?')
             parameters.append(date_to)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        count_query = 'SELECT COUNT(*) FROM "MainDB__ORDER"' + where
+        source = ' FROM "MainDB__ORDER" AS o LEFT JOIN "MainDB__CUST" AS c ON c."Cust ID" = o."Cust ID"'
+        count_query = 'SELECT COUNT(*)' + source + where
         query = (
-            'SELECT "Order No", "Order Date", "Cust ID", "Customer Name" '
-            'FROM "MainDB__ORDER"' + where + ' ORDER BY "Order Date" DESC, "Order No" LIMIT ? OFFSET ?'
+            'SELECT o."Order No", o."Order Date", o."Cust ID", c."Name"' + source + where
+            + ' ORDER BY o."Order Date" DESC, o."Order No" LIMIT ? OFFSET ?'
         )
         with self._lock:
             total = int(self._connection.execute(count_query, parameters).fetchone()[0])
@@ -157,8 +158,9 @@ class OrderExplorer:
             return None
         with self._lock:
             order = self._connection.execute(
-                'SELECT "Order No", "Order Date", "Cust ID", "Customer Name" '
-                'FROM "MainDB__ORDER" WHERE "Order No" = ? LIMIT 1',
+                'SELECT o."Order No", o."Order Date", o."Cust ID", c."Name" '
+                'FROM "MainDB__ORDER" AS o LEFT JOIN "MainDB__CUST" AS c ON c."Cust ID" = o."Cust ID" '
+                'WHERE o."Order No" = ? LIMIT 1',
                 (order_id,),
             ).fetchone()
             if order is None:
@@ -204,7 +206,9 @@ class OrderExplorer:
                 return None
             canonical_customer_id = _text(customer[0])
             config = self._connection.execute(
-                'SELECT "Order Config", "Invoice Config" FROM "MainDB__CUST_CON" WHERE "Cust ID" = ? LIMIT 1', (canonical_customer_id,)
+                'SELECT con."Com Code", cust."Inv Type" FROM "MainDB__CUST" AS cust '
+                'LEFT JOIN "MainDB__CUST_CON" AS con ON con."Cust ID" = cust."Cust ID" '
+                'WHERE cust."Cust ID" = ? LIMIT 1', (canonical_customer_id,)
             ).fetchone()
             consignees = self._connection.execute(
                 'SELECT "Consignee" FROM "MainDB__CUST_CONSIGNEE" WHERE "Cust ID" = ? ORDER BY "Consignee" LIMIT ?',
