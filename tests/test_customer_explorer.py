@@ -715,7 +715,7 @@ class TestCustomerExplorerContract(unittest.TestCase):
                     "api/customers/'+encodeURIComponent(id)+'/consignees",
                     "api/customers/'+encodeURIComponent(id)+'/notes",
                     "actor:activeStaff()",
-                    'fetch("api/staff")',
+                    'fetch("/program/api/staff")',
                 ):
                     self.assertIn(marker, html)
                 self.assertIn("function notePanel(", html)

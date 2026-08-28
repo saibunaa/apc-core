@@ -60,7 +60,7 @@ class ProgramShellTests(unittest.TestCase):
                 'Change',
                 'attribution only',
                 'not security, authentication, or authorization',
-                'fetch("api/staff")',
+                'fetch("/program/api/staff")',
                 'window.apcCoreActiveStaff',
             ):
                 self.assertIn(marker, html)
@@ -285,7 +285,7 @@ class ProgramShellTests(unittest.TestCase):
                 connection.request("GET", "/program/orders/")
                 response = connection.getresponse(); html = response.read().decode("utf-8"); connection.close()
                 self.assertEqual(200, response.status)
-                for marker in ('id="identity-confirm"', 'id="identity-picker"', 'data-identity-username', 'window.apcCoreActiveStaff'):
+                for marker in ('id="identity-confirm"', 'id="identity-picker"', 'data-identity-username', 'window.apcCoreActiveStaff', 'fetch("/program/api/staff")'):
                     self.assertIn(marker, html)
             finally:
                 server.shutdown(); server.server_close(); explorer.close(); orders.close()
