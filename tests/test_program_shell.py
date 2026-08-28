@@ -101,6 +101,13 @@ class ProgramShellTests(unittest.TestCase):
             self.assertNotIn('html.apc-core-known-user #identity-confirm{display:none}', html)
             self.assertIn('window.dispatchEvent(new CustomEvent("apc-core-identity",{detail:value||""}))', html)
 
+    def test_customer_workspace_keeps_profile_visible_and_does_not_force_page_scroll(self):
+        html = _customer_explorer_html()
+        for marker in (".profile{position:sticky", ".back{position:sticky", 'class="back" href="../"', "@media(max-width:760px){.shell{padding:12px}.workspace{grid-template-columns:1fr}.profile{position:static;align-self:auto;border:0;border-top:1px solid var(--line)}", "← APC Core"):
+            self.assertIn(marker, html)
+        self.assertNotIn("scrollIntoView", html)
+        self.assertNotIn("window.scrollTo", html)
+
     def test_program_prefix_is_a_first_class_route_with_relative_module_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
