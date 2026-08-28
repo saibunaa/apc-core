@@ -7,7 +7,7 @@ from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-from apc_core.item_explorer import ItemExplorer, _customer_explorer_html, _item_explorer_html, _menu_html, make_handler
+from apc_core.item_explorer import ItemExplorer, _customer_explorer_html, _item_explorer_html, _menu_html, _menu_html_body, make_handler
 
 
 def _snapshot(root: Path) -> Path:
@@ -161,6 +161,20 @@ class ProgramShellTests(unittest.TestCase):
         self.assertIn("function activeStaff(){return window.apcCoreActiveStaff||''}", customer_html)
         for html in (item_html, customer_html):
             self.assertNotIn("fetch('/api/staff')", html)
+
+    def test_main_menu_shares_the_warm_cream_shell_background_without_decoration(self):
+        html = _menu_html_body()
+        self.assertIn("--canvas:#faf7f2", html)
+        self.assertNotIn("#f5f5f7", html)
+        # Readability, opaque cards, module geometry, links, and focus-ring behavior are unchanged.
+        self.assertIn("--paper:#fff", html)
+        self.assertIn(".card{min-height:156px;border:1px solid var(--line);border-radius:20px;background:var(--paper)", html)
+        self.assertIn(".card:hover,.card:focus-visible{border-color:#a9cfee", html)
+        self.assertIn('href="customer-prices/"', html)
+        self.assertIn("<h2>Customer Prices</h2><p>Search and safely edit imported customer-item price rows.</p></div><span class=\"open\">Open Customer Price →</span>", html)
+        lowered = html.lower()
+        for decoration in ("<svg", "radial-gradient", "@keyframes", "animation:", "plant", "leaf", "petal", "vine", "wave", "bubble", "fish", "coral", "aquatic"):
+            self.assertNotIn(decoration, lowered)
 
 
 if __name__ == "__main__":
