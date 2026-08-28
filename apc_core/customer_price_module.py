@@ -121,10 +121,56 @@ class CustomerPriceModule:
         self._source.close()
         self._store.close()
 
+    def _legacy_snapshot_matches_store(self) -> bool:
+        """Recognize a complete pre-state import without mutating its quarantine history."""
+        customers, items = self._catalog()
+        rows = self._source_rows()
+        keys = [(customer, item) for customer, item, _ in rows]
+        duplicate_keys = {key for key, count in Counter(keys).items() if count > 1}
+        expected_rows: dict[tuple[str, str], tuple[str, str]] = {}
+        expected_quarantine: Counter[tuple[str, str, str]] = Counter()
+        for customer_code, item_id, price in rows:
+            if (customer_code, item_id) in duplicate_keys:
+                expected_quarantine[(customer_code, item_id, "duplicate_natural_key")] += 1
+            elif customer_code not in customers:
+                expected_quarantine[(customer_code, item_id, "unknown_customer")] += 1
+            elif item_id not in items:
+                expected_quarantine[(customer_code, item_id, "unknown_item")] += 1
+            else:
+                try:
+                    _validate_price(price)
+                except ValueError:
+                    expected_quarantine[(customer_code, item_id, "invalid_price")] += 1
+                else:
+                    expected_rows[(customer_code, item_id)] = (items[item_id], price)
+        actual_rows = list(self._store.connection.execute(
+            "SELECT customer_code,item_id,item_description,price,source_artifact_sha256,core_override "
+            "FROM customer_price_rows WHERE active=1"
+        ))
+        if len(actual_rows) != len(expected_rows):
+            return False
+        for customer_code, item_id, description, price, source_sha256, core_override in actual_rows:
+            expected = expected_rows.get((customer_code, item_id))
+            if expected is None or source_sha256 != self._source_sha256 or description != expected[0]:
+                return False
+            if not core_override and price != expected[1]:
+                return False
+        actual_quarantine = Counter(
+            (customer_code, item_id, reason)
+            for customer_code, item_id, reason in self._store.connection.execute(
+                "SELECT customer_code,item_id,reason FROM customer_price_quarantine WHERE active=1"
+            )
+        )
+        return actual_quarantine == expected_quarantine
+
     def reconciliation_status(self) -> dict[str, str]:
-        row = self._store.connection.execute(
-            "SELECT source_artifact_sha256 FROM customer_price_reconciliation_state WHERE singleton=1"
-        ).fetchone()
+        with self._lock, self._store.connection:
+            row = self._store.connection.execute(
+                "SELECT source_artifact_sha256 FROM customer_price_reconciliation_state WHERE singleton=1"
+            ).fetchone()
+            if row is None and self._legacy_snapshot_matches_store():
+                self._record_reconciliation()
+                row = (self._source_sha256,)
         state = "ready" if row is not None and str(row[0]) == self._source_sha256 else "reconciliation_required"
         return {"state": state, "source_sha256": self._source_sha256}
 
