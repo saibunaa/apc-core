@@ -125,9 +125,11 @@ def load_accepted_customer_price_runtime(manifest_path: Path, *, data_dir: Path 
         customer_explorer = CustomerExplorer(artifact_path, data_dir=data_dir)
         if customer_explorer.reconciliation_status()["source_sha256"] != manifest["accepted_artifact_sha256"]:
             raise RuntimeContractError("refusing mismatched customer accepted artifact")
-        customer_explorer.backfill_from_snapshot()
+        if customer_explorer.reconciliation_status()["state"] != "ready":
+            customer_explorer.backfill_from_snapshot()
         price_module = CustomerPriceModule.from_open_descriptor(descriptor, artifact_path, data_dir=data_dir)
-        price_module.import_from_snapshot()
+        if price_module.reconciliation_status()["state"] != "ready":
+            price_module.import_from_snapshot()
         return item_explorer, customer_explorer, price_module, manifest
     except RuntimeContractError:
         raise

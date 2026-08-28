@@ -106,6 +106,11 @@ class CustomerPriceModule:
             "action TEXT NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL, "
             "actor_username TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
         )
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS customer_price_reconciliation_state ("
+            "singleton INTEGER PRIMARY KEY CHECK(singleton=1), source_artifact_sha256 TEXT NOT NULL, "
+            "reconciled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+        )
         connection.commit()
 
     @classmethod
@@ -115,6 +120,20 @@ class CustomerPriceModule:
     def close(self) -> None:
         self._source.close()
         self._store.close()
+
+    def reconciliation_status(self) -> dict[str, str]:
+        row = self._store.connection.execute(
+            "SELECT source_artifact_sha256 FROM customer_price_reconciliation_state WHERE singleton=1"
+        ).fetchone()
+        state = "ready" if row is not None and str(row[0]) == self._source_sha256 else "reconciliation_required"
+        return {"state": state, "source_sha256": self._source_sha256}
+
+    def _record_reconciliation(self) -> None:
+        self._store.connection.execute(
+            "INSERT INTO customer_price_reconciliation_state(singleton,source_artifact_sha256,reconciled_at) VALUES (1,?,CURRENT_TIMESTAMP) "
+            "ON CONFLICT(singleton) DO UPDATE SET source_artifact_sha256=excluded.source_artifact_sha256,reconciled_at=CURRENT_TIMESTAMP",
+            (self._source_sha256,),
+        )
 
     def _catalog(self) -> tuple[set[str], dict[str, str]]:
         customers = {_clean_code(row[0]) for row in self._source.execute(f'SELECT "Cust ID" FROM "{_CUSTOMER_TABLE}"')}
@@ -206,6 +225,7 @@ class CustomerPriceModule:
                         (items[item_id], price, str(self.source_path), self._source_sha256, customer_code, item_id),
                     )
                 counts["accepted"] += 1
+            self._record_reconciliation()
             return counts
 
     def customer_codes(self) -> list[str]:
