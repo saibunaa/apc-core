@@ -8,6 +8,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from apc_core.item_explorer import ItemExplorer, _customer_explorer_html, _item_explorer_html, _menu_html, _menu_html_body, make_handler
+from apc_core.order_explorer import OrderExplorer
 
 
 def _snapshot(root: Path) -> Path:
@@ -17,6 +18,30 @@ def _snapshot(root: Path) -> Path:
     connection.execute('INSERT INTO "MainDB__ITEM" VALUES ("IT-001")')
     connection.commit()
     connection.close()
+    return source
+
+
+def _order_snapshot(root: Path) -> Path:
+    source = root / "orders.sqlite"
+    connection = sqlite3.connect(source)
+    for table, definition in {
+        "MainDB__ORDER": '"Order No" TEXT, "Order Date" TEXT, "Cust ID" TEXT, "Customer Name" TEXT',
+        "MainDB__ORDER_ITEM": '"Order No" TEXT, "Line No" TEXT, "Item ID" TEXT, "Qty" TEXT',
+        "MainDB__CUST": '"Cust ID" TEXT, "Name" TEXT',
+        "MainDB__CUST_CON": '"Cust ID" TEXT, "Order Config" TEXT, "Invoice Config" TEXT',
+        "MainDB__CUST_CONSIGNEE": '"Cust ID" TEXT, "Consignee" TEXT',
+        "MainDB__CUST_NOTE": '"Cust ID" TEXT, "Order" TEXT, "Invoice" TEXT',
+        "MainDB__ITEM": '"Item ID" TEXT, "Description" TEXT, "Description TH" TEXT',
+    }.items():
+        connection.execute(f'CREATE TABLE "{table}" ({definition})')
+    connection.execute('INSERT INTO "MainDB__ORDER" VALUES (?, ?, ?, ?)', ("ORD/1", "2026-08-29", "C/1", "Customer One"))
+    connection.execute('INSERT INTO "MainDB__ORDER_ITEM" VALUES (?, ?, ?, ?)', ("ORD/1", "1", "IT-1", "2"))
+    connection.execute('INSERT INTO "MainDB__CUST" VALUES (?, ?)', ("C/1", "Customer One"))
+    connection.execute('INSERT INTO "MainDB__CUST_CON" VALUES (?, ?, ?)', ("C/1", "order config", "invoice config"))
+    connection.execute('INSERT INTO "MainDB__CUST_CONSIGNEE" VALUES (?, ?)', ("C/1", "Bangkok"))
+    connection.execute('INSERT INTO "MainDB__CUST_NOTE" VALUES (?, ?, ?)', ("C/1", "order note", "invoice note"))
+    connection.execute('INSERT INTO "MainDB__ITEM" VALUES (?, ?, ?)', ("IT-1", "Item one", "สินค้า"))
+    connection.commit(); connection.close()
     return source
 
 
@@ -218,6 +243,96 @@ class ProgramShellTests(unittest.TestCase):
         self.assertIn("background:var(--paper)", html)
         self.assertIn('href="customer-prices/"', html)
         self.assertIn("<h2>Customer Prices</h2><p>Search and safely edit imported customer-item price rows.</p></div><span class=\"open\">Open Customer Price →</span>", html)
+
+    def test_order_forms_are_canonical_get_only_routes_with_no_mutation_fallthrough(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            explorer = ItemExplorer(_snapshot(root), data_dir=root / "state")
+            orders = OrderExplorer(_order_snapshot(root))
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(explorer, {"accepted": True}, order_explorer=orders))
+            worker = threading.Thread(target=server.serve_forever, daemon=True); worker.start()
+            try:
+                port = int(server.server_address[1])
+                cases = (("/program/orders/", 200), ("/program/orders/api/orders", 200), ("/program/orders/api/orders/ORD%2F1", 200), ("/program/orders/api/customer-template/C%2F1", 200))
+                for path, expected in cases:
+                    connection = HTTPConnection("127.0.0.1", port, timeout=3); connection.request("GET", path)
+                    response = connection.getresponse(); payload = response.read(); connection.close()
+                    self.assertEqual(expected, response.status, path)
+                    self.assertTrue(payload)
+                for method in ("POST", "PUT", "PATCH", "DELETE"):
+                    connection = HTTPConnection("127.0.0.1", port, timeout=3)
+                    connection.request(method, "/program/orders/api/orders", b"{}", {"Content-Type": "application/json"})
+                    response = connection.getresponse(); response.read(); connection.close()
+                    self.assertEqual(405, response.status, method)
+            finally:
+                server.shutdown(); server.server_close(); explorer.close(); orders.close()
+
+    def test_order_forms_route_uses_the_shared_staff_identity_shell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            explorer = ItemExplorer(_snapshot(root), data_dir=root / "state")
+            orders = OrderExplorer(_order_snapshot(root))
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(explorer, {"accepted": True}, order_explorer=orders))
+            worker = threading.Thread(target=server.serve_forever, daemon=True); worker.start()
+            try:
+                connection = HTTPConnection("127.0.0.1", int(server.server_address[1]), timeout=3)
+                connection.request("GET", "/program/orders/")
+                response = connection.getresponse(); html = response.read().decode("utf-8"); connection.close()
+                self.assertEqual(200, response.status)
+                for marker in ('id="identity-confirm"', 'id="identity-picker"', 'data-identity-username', 'window.apcCoreActiveStaff'):
+                    self.assertIn(marker, html)
+            finally:
+                server.shutdown(); server.server_close(); explorer.close(); orders.close()
+
+    def test_order_template_endpoint_resolves_no_order_customer_exact_and_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = _order_snapshot(root)
+            connection = sqlite3.connect(source)
+            connection.executemany(
+                'INSERT INTO "MainDB__CUST" VALUES (?, ?)',
+                [("C/NO-ORDER", "No order customer"), ("C/NO-OTHER", "Another no order customer")],
+            )
+            connection.commit(); connection.close()
+            explorer = ItemExplorer(_snapshot(root), data_dir=root / "state")
+            orders = OrderExplorer(source)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(explorer, {"accepted": True}, order_explorer=orders))
+            worker = threading.Thread(target=server.serve_forever, daemon=True); worker.start()
+            try:
+                port = int(server.server_address[1])
+                for code in ("c%2Fno-order", "c%2Fno-"):
+                    connection = HTTPConnection("127.0.0.1", port, timeout=3)
+                    connection.request("GET", "/program/orders/api/customer-template/" + code)
+                    response = connection.getresponse(); payload = json.loads(response.read()); connection.close()
+                    self.assertEqual(200, response.status)
+                    self.assertEqual("C/NO-ORDER", payload["customer_id"])
+                connection = HTTPConnection("127.0.0.1", port, timeout=3)
+                connection.request("GET", "/program/orders/api/customer-template/C%2FMISSING")
+                response = connection.getresponse(); response.read(); connection.close()
+                self.assertEqual(404, response.status)
+            finally:
+                server.shutdown(); server.server_close(); explorer.close(); orders.close()
+
+    def test_order_forms_modal_ui_is_safe_readonly_and_keyboard_operable(self):
+        import apc_core.item_explorer as module
+        html = module._order_explorer_html()
+        for marker in (
+            'id="frmOrderForm"', 'id="open-order-forms"', 'id="frmOrderFormList"', 'role="dialog"',
+            'Date', 'Cust', 'Country', 'AWB', 'Order No.', 'B/I/M/P/W/U/T', 'function loadOrder(',
+            "event.key==='Escape'", 'openButton.focus()', "credentials:'same-origin'", "cache:'no-store'",
+            'id="customer-code-options"', 'function commitCustomerCode(', 'textContent=', 'preview-only',
+        ):
+            self.assertIn(marker, html)
+        self.assertIn('href="orders/"', _menu_html_body())
+        self.assertNotIn("innerHTML", html)
+        self.assertNotIn("fetch('/", html)
+        self.assertNotRegex(html, r"fetch\([^)]*method\s*:")
+
+    def test_order_forms_customer_template_ui_hydrates_the_typed_code_not_only_loaded_orders(self):
+        import apc_core.item_explorer as module
+        html = module._order_explorer_html()
+        self.assertIn("templateFor(typed)", html)
+        self.assertIn("$('#customer-code').value=data.customer_id", html)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from .item_explorer import ItemExplorer, make_handler
+from .order_explorer import OrderExplorer
 from .recovery import RecoveryAuthorizer, RecoveryService
 from .customer_explorer import CustomerExplorer
 from .customer_price_module import CustomerPriceModule
@@ -144,6 +145,40 @@ def load_accepted_customer_price_runtime(manifest_path: Path, *, data_dir: Path 
         os.close(descriptor)
 
 
+def load_accepted_customer_price_order_runtime(manifest_path: Path, *, data_dir: Path | None = None) -> tuple[ItemExplorer, CustomerExplorer, CustomerPriceModule, OrderExplorer, dict]:
+    """Build all Order Forms dependencies from the one verified accepted descriptor."""
+    descriptor, artifact_path, manifest = _read_accepted_manifest(manifest_path)
+    item_explorer = customer_explorer = price_module = order_explorer = None
+    try:
+        if manifest.get("customer_ready") is not True or manifest.get("required_customer_columns") != sorted(REQUIRED_CUSTOMER_COLUMNS):
+            raise RuntimeContractError("refusing non-customer-ready accepted artifact")
+        item_explorer = ItemExplorer.from_open_descriptor(descriptor, artifact_path, data_dir=data_dir)
+        customer_explorer = CustomerExplorer(artifact_path, data_dir=data_dir)
+        if customer_explorer.reconciliation_status()["source_sha256"] != manifest["accepted_artifact_sha256"]:
+            customer_explorer.close()
+            raise RuntimeContractError("refusing mismatched customer accepted artifact")
+        if customer_explorer.reconciliation_status()["state"] != "ready":
+            customer_explorer.backfill_from_snapshot()
+        price_module = CustomerPriceModule.from_open_descriptor(descriptor, artifact_path, data_dir=data_dir)
+        if price_module.reconciliation_status()["state"] != "ready":
+            price_module.import_from_snapshot()
+        order_explorer = OrderExplorer.from_open_descriptor(descriptor, artifact_path)
+        return item_explorer, customer_explorer, price_module, order_explorer, manifest
+    except RuntimeContractError:
+        raise
+    except (OSError, ValueError, sqlite3.Error) as error:
+        raise RuntimeContractError("refusing invalid customer-price-order accepted artifact") from None
+    finally:
+        if order_explorer is None:
+            if price_module is not None:
+                price_module.close()
+            if customer_explorer is not None:
+                customer_explorer.close()
+            if item_explorer is not None:
+                item_explorer.close()
+        os.close(descriptor)
+
+
 def allowed_mutation_origins(*, container_ingress: bool) -> frozenset[str] | None:
     configured = os.environ.get("APC_CORE_ALLOWED_MUTATION_ORIGINS", "")
     origins = frozenset(origin.strip() for origin in configured.split(",") if origin.strip())
@@ -184,21 +219,26 @@ def main() -> None:
     except RuntimeContractError as error:
         parser.error(str(error))
     recovery_authorizer, recovery_service = recovery_test_mode(data_dir=data_dir or Path("."))
-    item_explorer, customer_explorer, customer_price_module, manifest = load_accepted_customer_price_runtime(args.manifest, data_dir=data_dir)
+    item_explorer, customer_explorer, customer_price_module, order_explorer, manifest = load_accepted_customer_price_order_runtime(args.manifest, data_dir=data_dir)
     def close_core_modules_for_recovery() -> None:
         """Maintenance boundary: no Core SQLite connection survives a generation switch."""
+        order_explorer.close()
         customer_price_module.close()
         customer_explorer.close()
         item_explorer.close()
 
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(
-        item_explorer, manifest, customer_explorer, customer_price_module, customer_lan_ingress=args.container_ingress,
-        allowed_mutation_origins=mutation_origins,
-        recovery_authorizer=recovery_authorizer, recovery_service=recovery_service,
-        recovery_maintenance=close_core_modules_for_recovery if recovery_service is not None else None,
-    ))
-    print(f"APC Core Item Explorer listening on http://127.0.0.1:{args.port}")
-    server.serve_forever()
+    try:
+        server = ThreadingHTTPServer((args.host, args.port), make_handler(
+            item_explorer, manifest, customer_explorer, customer_price_module, order_explorer,
+            customer_lan_ingress=args.container_ingress,
+            allowed_mutation_origins=mutation_origins,
+            recovery_authorizer=recovery_authorizer, recovery_service=recovery_service,
+            recovery_maintenance=close_core_modules_for_recovery if recovery_service is not None else None,
+        ))
+        print(f"APC Core Item Explorer listening on http://127.0.0.1:{args.port}")
+        server.serve_forever()
+    finally:
+        close_core_modules_for_recovery()
 
 
 if __name__ == "__main__":
