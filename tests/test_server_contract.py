@@ -4,7 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from apc_core.server import RuntimeContractError, load_accepted_runtime
 from apc_core.snapshot_contract import certify_snapshot
@@ -67,6 +67,76 @@ class ServerContractTests(unittest.TestCase):
             self.assertEqual("IT-001", items.search()["items"][0]["item_id"])
             self.assertEqual("C-001", customers.search()["customers"][0]["customer_id"])
             self.assertEqual("12", prices.search("C-001")["rows"][0]["price"])
+
+    def test_customer_price_order_runtime_constructs_order_explorer_from_the_same_validated_descriptor(self):
+        """Order runtime has no caller source path and receives only the accepted descriptor/path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            accepted = root / "accepted.sqlite"
+            accepted.write_bytes(b"accepted artifact")
+            descriptor = os.open(accepted, os.O_RDONLY | os.O_NOFOLLOW)
+            manifest = {
+                "customer_ready": True,
+                "required_customer_columns": ["Cust ID", "Name"],
+                "accepted_artifact_sha256": "accepted-hash",
+            }
+            items = Mock()
+            customers = Mock()
+            customers.reconciliation_status.return_value = {"source_sha256": "accepted-hash", "state": "ready"}
+            prices = Mock()
+            prices.reconciliation_status.return_value = {"state": "ready"}
+            orders = Mock()
+            from apc_core import server
+            self.assertTrue(hasattr(server, "load_accepted_customer_price_order_runtime"))
+            with patch.object(server, "_read_accepted_manifest", return_value=(descriptor, accepted, manifest)), \
+                 patch.object(server.ItemExplorer, "from_open_descriptor", return_value=items) as item_factory, \
+                 patch.object(server, "CustomerExplorer", return_value=customers), \
+                 patch.object(server.CustomerPriceModule, "from_open_descriptor", return_value=prices) as price_factory, \
+                 patch.object(server.OrderExplorer, "from_open_descriptor", return_value=orders) as order_factory:
+                loaded_items, loaded_customers, loaded_prices, loaded_orders, loaded_manifest = server.load_accepted_customer_price_order_runtime(root / "substituted.sqlite")
+
+            self.assertEqual((items, customers, prices, orders, manifest), (loaded_items, loaded_customers, loaded_prices, loaded_orders, loaded_manifest))
+            item_factory.assert_called_once_with(descriptor, accepted, data_dir=None)
+            price_factory.assert_called_once_with(descriptor, accepted, data_dir=None)
+            order_factory.assert_called_once_with(descriptor, accepted)
+
+    def test_main_passes_accepted_order_explorer_to_handler_and_closes_it_with_core_modules(self):
+        """Production composition exposes Order Forms only through the accepted runtime loader."""
+        import sys
+        from apc_core import server
+        items = Mock()
+        customers = Mock()
+        prices = Mock()
+        orders = Mock()
+        manifest = {"accepted": True}
+        handler = object()
+        created_servers = []
+
+        class FakeServer:
+            def __init__(self, address, supplied_handler):
+                self.address = address
+                self.supplied_handler = supplied_handler
+                created_servers.append(self)
+
+            def serve_forever(self):
+                return None
+
+        with patch.object(sys, "argv", ["server", "--manifest", "accepted.json"]), \
+             patch.object(server, "load_accepted_customer_price_order_runtime", return_value=(items, customers, prices, orders, manifest)) as loader, \
+             patch.object(server, "make_handler", return_value=handler) as handler_factory, \
+             patch.object(server, "ThreadingHTTPServer", FakeServer):
+            server.main()
+
+        loader.assert_called_once_with(Path("accepted.json"), data_dir=None)
+        handler_factory.assert_called_once_with(
+            items, manifest, customers, prices, orders,
+            customer_lan_ingress=False, allowed_mutation_origins=None,
+            recovery_authorizer=None, recovery_service=None, recovery_maintenance=None,
+        )
+        self.assertEqual(1, len(created_servers))
+        self.assertEqual(("127.0.0.1", 8769), created_servers[0].address)
+        for module in (orders, prices, customers, items):
+            module.close.assert_called_once_with()
 
     def test_customer_price_runtime_startup_is_a_noop_for_an_already_reconciled_accepted_artifact(self):
         with tempfile.TemporaryDirectory() as tmp:
