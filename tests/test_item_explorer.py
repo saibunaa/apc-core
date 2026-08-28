@@ -159,7 +159,7 @@ class ItemExplorerTests(unittest.TestCase):
                 conn.request("GET", "/items/")
                 items_html = conn.getresponse().read().decode("utf-8")
                 self.assertIn('href="../"', items_html)
-                self.assertIn("← APC Core", items_html)
+                self.assertIn("Main menu", items_html)
                 self.assertIn(".detail{position:sticky", items_html)
                 self.assertNotIn("read-only pilot", items_html.lower())
                 self.assertNotIn("snapshot", items_html.lower())
