@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import re
 import secrets
@@ -279,11 +280,12 @@ class RecoveryAuthorizer:
 
     _session_ttl_seconds = 10 * 60
 
-    def __init__(self, *, pin_hash: bytes, salt: bytes, test_mode: bool):
+    def __init__(self, *, pin_hash: bytes | None, salt: bytes | None, test_mode: bool, state_path: Path | None = None):
         if test_mode is not True:
             raise RecoveryError("production recovery authorization is not configured")
         self._pin_hash = pin_hash
         self._salt = salt
+        self._state_path = state_path
         self._sessions: dict[str, float] = {}
         self._attempts: dict[str, tuple[int, float]] = {}
         self._lock = threading.RLock()
@@ -295,8 +297,57 @@ class RecoveryAuthorizer:
         salt = os.urandom(16)
         return cls(pin_hash=hashlib.scrypt(pin.encode("utf-8"), salt=salt, n=2**14, r=8, p=1), salt=salt, test_mode=True)
 
+    @classmethod
+    def from_state_file(cls, state_path: Path) -> "RecoveryAuthorizer":
+        if not state_path.exists():
+            return cls(pin_hash=None, salt=None, test_mode=True, state_path=state_path)
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            pin_hash = bytes.fromhex(state["pin_hash"])
+            salt = bytes.fromhex(state["salt"])
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise RecoveryError("invalid recovery authorization state") from error
+        return cls(pin_hash=pin_hash, salt=salt, test_mode=True, state_path=state_path)
+
+    @property
+    def needs_setup(self) -> bool:
+        return self._pin_hash is None
+
+    def setup(self, *, pin: object, confirmation: object) -> None:
+        if self._state_path is None or not self.needs_setup:
+            raise RecoveryError("recovery setup is unavailable")
+        if type(pin) is not str or pin != confirmation or not re.fullmatch(r"[0-9]{6,32}", pin):
+            raise RecoveryError("invalid recovery PIN setup")
+        salt = os.urandom(16)
+        pin_hash = hashlib.scrypt(pin.encode("utf-8"), salt=salt, n=2**14, r=8, p=1)
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        claim_path = self._state_path.with_name(self._state_path.name + ".setup-lock")
+        try:
+            claim_fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, stat.S_IRUSR | stat.S_IWUSR)
+        except FileExistsError as error:
+            raise RecoveryError("recovery setup is unavailable") from error
+        try:
+            if self._state_path.exists():
+                raise RecoveryError("recovery setup is unavailable")
+            with tempfile.NamedTemporaryFile(dir=self._state_path.parent, mode="w", encoding="utf-8", delete=False) as staged:
+                staged.write(json.dumps({"pin_hash": pin_hash.hex(), "salt": salt.hex()}))
+                staged_path = Path(staged.name)
+            try:
+                os.chmod(staged_path, stat.S_IRUSR | stat.S_IWUSR)
+                os.replace(staged_path, self._state_path)
+            finally:
+                staged_path.unlink(missing_ok=True)
+        finally:
+            os.close(claim_fd)
+            claim_path.unlink(missing_ok=True)
+        self._pin_hash, self._salt = pin_hash, salt
+
+    @staticmethod
+    def setup_html() -> str:
+        return """<!doctype html><title>Set up Admin PIN</title><main><h1>Set up Admin PIN</h1><p>Create the PIN needed to open the Admin panel on this computer.</p><form id=\"setup-form\"><label>Create PIN <input name=\"pin\" inputmode=\"numeric\" required autofocus></label><label>Confirm PIN <input name=\"confirmation\" inputmode=\"numeric\" required></label><button>Save Admin PIN</button></form><p id=\"result\"></p></main><script>document.getElementById('setup-form').addEventListener('submit',async e=>{e.preventDefault();const r=await fetch('setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(Object.fromEntries(new FormData(e.currentTarget)))});document.getElementById('result').textContent=r.ok?'PIN saved. Enter it to continue.':'PIN was not saved.';if(r.ok)location.reload()});</script>"""
+
     def authenticate(self, *, pin: object, client_id: str) -> str | None:
-        if type(pin) is not str or type(client_id) is not str:
+        if type(pin) is not str or type(client_id) is not str or self._salt is None or self._pin_hash is None:
             return None
         now = time.monotonic()
         with self._lock:
@@ -330,4 +381,4 @@ class RecoveryAuthorizer:
 
     @staticmethod
     def panel_html() -> str:
-        return """<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>APC Core · Recovery</title><style>:root{--ink:#24272b;--paper:#fffdfa;--cream:#faf7f2;--line:#e5e1db;--accent:#1d6b57}*{box-sizing:border-box}body{margin:0;background:var(--cream);color:var(--ink);font:14px -apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif}.shell{max-width:680px;margin:36px auto;padding:24px;background:var(--paper);border:1px solid var(--line);border-radius:16px;box-shadow:0 8px 24px #24272b12}h1{margin-top:0}label{display:grid;gap:5px;margin:12px 0;font-weight:600}input{padding:10px;border:1px solid var(--line);border-radius:8px;font:inherit}button{padding:10px 14px;border:0;border-radius:8px;background:var(--accent);color:white;font:inherit;font-weight:700}#result{min-height:1.4em}</style><main class=\"shell\"><h1>Recovery / Snapshot Restore</h1><p>This isolated test panel is PIN-authorized. Selected staff identity remains attribution only, never authentication or authorization.</p><form id=\"restore-form\"><label>Accepted snapshot ID <input name=\"snapshot_id\" required autocomplete=\"off\"></label><label>Admin actor <input name=\"actor\" required autocomplete=\"off\"></label><label>Reason <input name=\"reason\" required maxlength=\"500\"></label><label>Type snapshot ID again <input name=\"confirmation\" required autocomplete=\"off\"></label><button>Restore accepted snapshot</button></form><form id=\"rollback-form\"><h2>Rollback latest restore</h2><label>Admin actor <input name=\"actor\" required autocomplete=\"off\"></label><label>Reason <input name=\"reason\" required maxlength=\"500\"></label><label>Type prior-generation path <input name=\"confirmation\" required autocomplete=\"off\"></label><button>Rollback</button></form><button id=\"audit\" type=\"button\">View audit</button><pre id=\"audit-output\"></pre><p id=\"result\" role=\"status\"></p></main><script>document.getElementById('restore-form').addEventListener('submit',async event=>{event.preventDefault();const result=document.getElementById('result');result.textContent='Preparing isolated restore…';const payload=Object.fromEntries(new FormData(event.currentTarget));try{const response=await fetch('restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});result.textContent=response.ok?'Restore validated and switched.':'Restore refused.'}catch{result.textContent='Restore unavailable.'}});document.getElementById('rollback-form').addEventListener('submit',async event=>{event.preventDefault();const result=document.getElementById('result');const payload=Object.fromEntries(new FormData(event.currentTarget));const response=await fetch('rollback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});result.textContent=response.ok?'Rollback validated and switched.':'Rollback refused.'});document.getElementById('audit').addEventListener('click',async()=>{const actor=document.querySelector('#rollback-form [name=actor]').value||document.querySelector('#restore-form [name=actor]').value;const response=await fetch('audit?actor='+encodeURIComponent(actor));document.getElementById('audit-output').textContent=response.ok?JSON.stringify(await response.json(),null,2):'Audit unavailable.'});</script></html>"""
+        return """<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>APC Core · Recovery</title><style>:root{--ink:#24272b;--paper:#fffdfa;--cream:#faf7f2;--line:#e5e1db;--accent:#1d6b57}*{box-sizing:border-box}body{margin:0;background:var(--cream);color:var(--ink);font:14px -apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif}.shell{max-width:680px;margin:36px auto;padding:24px;background:var(--paper);border:1px solid var(--line);border-radius:16px;box-shadow:0 8px 24px #24272b12}h1{margin-top:0}label{display:grid;gap:5px;margin:12px 0;font-weight:600}input{padding:10px;border:1px solid var(--line);border-radius:8px;font:inherit}button{padding:10px 14px;border:0;border-radius:8px;background:var(--accent);color:white;font:inherit;font-weight:700}#result{min-height:1.4em}</style><main class=\"shell\"><h1>Admin panel</h1><p>Use this private panel to manage saved safe copies of the local test system. Your staff name is recorded in the audit trail.</p><form id=\"restore-form\"><label>Accepted snapshot ID <input name=\"snapshot_id\" required autocomplete=\"off\"></label><label>Admin actor <input name=\"actor\" required autocomplete=\"off\"></label><label>Reason <input name=\"reason\" required maxlength=\"500\"></label><label>Type snapshot ID again <input name=\"confirmation\" required autocomplete=\"off\"></label><button>Restore accepted snapshot</button></form><form id=\"rollback-form\"><h2>Rollback latest restore</h2><label>Admin actor <input name=\"actor\" required autocomplete=\"off\"></label><label>Reason <input name=\"reason\" required maxlength=\"500\"></label><label>Type prior-generation path <input name=\"confirmation\" required autocomplete=\"off\"></label><button>Rollback</button></form><button id=\"audit\" type=\"button\">View audit</button><pre id=\"audit-output\"></pre><p id=\"result\" role=\"status\"></p></main><script>document.getElementById('restore-form').addEventListener('submit',async event=>{event.preventDefault();const result=document.getElementById('result');result.textContent='Preparing isolated restore…';const payload=Object.fromEntries(new FormData(event.currentTarget));try{const response=await fetch('restore',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});result.textContent=response.ok?'Restore validated and switched.':'Restore refused.'}catch{result.textContent='Restore unavailable.'}});document.getElementById('rollback-form').addEventListener('submit',async event=>{event.preventDefault();const result=document.getElementById('result');const payload=Object.fromEntries(new FormData(event.currentTarget));const response=await fetch('rollback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});result.textContent=response.ok?'Rollback validated and switched.':'Rollback refused.'});document.getElementById('audit').addEventListener('click',async()=>{const actor=document.querySelector('#rollback-form [name=actor]').value||document.querySelector('#restore-form [name=actor]').value;const response=await fetch('audit?actor='+encodeURIComponent(actor));document.getElementById('audit-output').textContent=response.ok?JSON.stringify(await response.json(),null,2):'Audit unavailable.'});</script></html>"""

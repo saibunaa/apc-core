@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from apc_core.item_explorer import CoreStore
-from apc_core.recovery import RecoveryError, RecoveryService
+from apc_core.recovery import RecoveryAuthorizer, RecoveryError, RecoveryService
 
 
 def _core_db(path: Path, marker: str) -> None:
@@ -158,6 +158,19 @@ class RecoveryServiceTests(unittest.TestCase):
                 "post-restore-write",
                 sqlite3.connect(current).execute("SELECT value FROM state_marker ORDER BY rowid DESC LIMIT 1").fetchone()[0],
             )
+    def test_first_visit_setup_persists_a_pin_without_storing_the_pin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "recovery-auth.json"
+            authorizer = RecoveryAuthorizer.from_state_file(state_path)
+            self.assertTrue(authorizer.needs_setup)
+            self.assertIsNone(authorizer.authenticate(pin="123456", client_id="loopback"))
+            other = RecoveryAuthorizer.from_state_file(state_path)
+            authorizer.setup(pin="123456", confirmation="123456")
+            self.assertFalse(authorizer.needs_setup)
+            self.assertNotIn("123456", state_path.read_text())
+            self.assertIsNotNone(RecoveryAuthorizer.from_state_file(state_path).authenticate(pin="123456", client_id="loopback"))
+            with self.assertRaisesRegex(RecoveryError, "unavailable"):
+                other.setup(pin="654321", confirmation="654321")
 
 
 if __name__ == "__main__":

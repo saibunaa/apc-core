@@ -96,8 +96,8 @@ class RecoveryPanelAuthTests(unittest.TestCase):
                 panel_html = response.read().decode("utf-8")
                 conn.close()
                 self.assertEqual(200, response.status)
-                self.assertIn("Recovery / Snapshot Restore", panel_html)
-                self.assertIn("attribution only", panel_html)
+                self.assertIn("Admin panel", panel_html)
+                self.assertIn("saved safe copies", panel_html)
             finally:
                 server.shutdown(); server.server_close()
     def test_pin_authorized_restore_rejects_non_admin_actor_and_audits_admin_actor(self):

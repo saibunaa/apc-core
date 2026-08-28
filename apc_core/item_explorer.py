@@ -787,6 +787,8 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
             if parsed.path == "/admin/recovery/":
                 if recovery_authorizer is None:
                     self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                elif recovery_authorizer.needs_setup:
+                    self._send_html(HTTPStatus.OK, recovery_authorizer.setup_html())
                 elif recovery_authorizer.is_authorized(self._recovery_session_token()):
                     self._send_html(HTTPStatus.OK, recovery_authorizer.panel_html())
                 else:
@@ -935,6 +937,18 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                     threading.Thread(target=self.server.shutdown, daemon=True).start()
                 except (UnicodeDecodeError, json.JSONDecodeError, ValueError, sqlite3.Error):
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid recovery restore request"})
+                return
+            if recovery_authorizer is not None and customer_path == "/admin/recovery/setup":
+                try:
+                    content_length = int(self.headers.get("Content-Length", "-1"))
+                    payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                    if type(payload) is not dict or set(payload) != {"pin", "confirmation"}:
+                        raise ValueError
+                    recovery_authorizer.setup(pin=payload["pin"], confirmation=payload["confirmation"])
+                except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Admin PIN was not saved"})
+                else:
+                    self._send_json(HTTPStatus.NO_CONTENT, {})
                 return
             if recovery_authorizer is not None and customer_path == "/admin/recovery/login":
                 try:

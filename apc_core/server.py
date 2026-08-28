@@ -145,6 +145,8 @@ def load_accepted_customer_price_runtime(manifest_path: Path, *, data_dir: Path 
 def recovery_test_mode(*, data_dir: Path) -> tuple[RecoveryAuthorizer | None, RecoveryService | None]:
     """Enable the recovery panel only for an explicitly PIN-configured isolated test process."""
     pin = os.environ.get("APC_CORE_RECOVERY_TEST_PIN")
+    if os.environ.get("APC_CORE_RECOVERY_TEST_MODE") == "1":
+        return RecoveryAuthorizer.from_state_file(data_dir / "recovery-auth.json"), RecoveryService(data_dir=data_dir)
     if pin is None:
         return None, None
     return RecoveryAuthorizer.from_test_pin(pin), RecoveryService(data_dir=data_dir)
@@ -159,12 +161,13 @@ def main() -> None:
     args = parser.parse_args()
     if args.host not in {"127.0.0.1", "::1", "localhost"} and not (args.container_ingress and args.host == "0.0.0.0"):
         parser.error("host must be loopback-only unless explicit container ingress is used")
-    if args.container_ingress and os.environ.get("APC_CORE_RECOVERY_TEST_PIN") is not None:
+    recovery_enabled = os.environ.get("APC_CORE_RECOVERY_TEST_PIN") is not None or os.environ.get("APC_CORE_RECOVERY_TEST_MODE") == "1"
+    if args.container_ingress and recovery_enabled:
         parser.error("recovery test mode is loopback-only and forbidden with container ingress")
-    if os.environ.get("APC_CORE_RECOVERY_TEST_PIN") is not None and args.host not in {"127.0.0.1", "::1", "localhost"}:
+    if recovery_enabled and args.host not in {"127.0.0.1", "::1", "localhost"}:
         parser.error("recovery test mode is loopback-only")
     data_dir = Path(os.environ["APC_CORE_DATA_DIR"]) if os.environ.get("APC_CORE_DATA_DIR") else None
-    if os.environ.get("APC_CORE_RECOVERY_TEST_PIN") is not None and data_dir is None:
+    if recovery_enabled and data_dir is None:
         parser.error("APC_CORE_DATA_DIR is required for isolated recovery test mode")
     recovery_authorizer, recovery_service = recovery_test_mode(data_dir=data_dir or Path("."))
     item_explorer, customer_explorer, customer_price_module, manifest = load_accepted_customer_price_runtime(args.manifest, data_dir=data_dir)
