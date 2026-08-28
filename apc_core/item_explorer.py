@@ -733,7 +733,7 @@ def _customer_explorer_html() -> str:
     return _staff_identity_shell(html)
 
 
-def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None, customer_price_module=None, *, customer_lan_ingress: bool = False, recovery_authorizer=None, recovery_service=None, recovery_maintenance=None):
+def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None, customer_price_module=None, *, customer_lan_ingress: bool = False, allowed_mutation_origins: frozenset[str] | None = None, recovery_authorizer=None, recovery_service=None, recovery_maintenance=None):
     # A request holds this for its full lifetime. Recovery therefore cannot close/swap
     # Core SQLite while an ordinary request is reading or writing it.
     request_gate = threading.RLock()
@@ -889,8 +889,30 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                 return
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
+        def _require_json_same_origin(self) -> bool:
+            if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+                self._send_json(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "application/json is required"})
+                return False
+            origin = self.headers.get("Origin")
+            if allowed_mutation_origins is not None:
+                if origin not in allowed_mutation_origins:
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "approved Program page required"})
+                    return False
+            elif origin is not None:
+                parsed_origin = urlparse(origin)
+                host = self.headers.get("Host", "").lower()
+                if parsed_origin.scheme not in {"http", "https"} or parsed_origin.netloc.lower() != host:
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "cross-origin mutation denied"})
+                    return False
+            return True
+
         def do_POST(self) -> None:
             customer_path = _canonical_program_path(urlparse(self.path).path)
+            if (customer_path.startswith("/admin/recovery/")
+                    or customer_path.startswith("/customer-prices/api/customers/")
+                    or customer_path == "/customers/api/customers"
+                    or customer_path.startswith("/customers/api/customers/")) and not self._require_json_same_origin():
+                return
             if recovery_service is not None and customer_path == "/admin/recovery/rollback":
                 if recovery_authorizer is None or not recovery_authorizer.is_authorized(self._recovery_session_token()):
                     self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "recovery authorization required"})
@@ -1017,6 +1039,8 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid customer mutation"})
                 return
             api_path = _canonical_program_path(urlparse(self.path).path).removeprefix("/items")
+            if api_path.startswith("/api/items") and not self._require_json_same_origin():
+                return
             if api_path == "/api/items":
                 try:
                     content_length = int(self.headers.get("Content-Length", "-1"))

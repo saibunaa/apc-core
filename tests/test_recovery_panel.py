@@ -100,6 +100,36 @@ class RecoveryPanelAuthTests(unittest.TestCase):
                 self.assertIn("saved safe copies", panel_html)
             finally:
                 server.shutdown(); server.server_close()
+    def test_recovery_setup_rejects_cross_origin_and_non_json_requests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = _snapshot(root)
+            explorer = ItemExplorer(source, data_dir=root / "core-state")
+            authorizer = RecoveryAuthorizer.from_state_file(root / "recovery-auth.json")
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(explorer, {"accepted": True}, recovery_authorizer=authorizer))
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                host, port = server.server_address
+                payload = json.dumps({"pin": "123456", "confirmation": "123456"})
+                conn = HTTPConnection(host, port, timeout=3)
+                conn.request("POST", "/admin/recovery/setup", payload, {"Content-Type": "text/plain", "Origin": "https://evil.example"})
+                self.assertEqual(415, conn.getresponse().status)
+                conn.close()
+                self.assertTrue(authorizer.needs_setup)
+
+                conn = HTTPConnection(host, port, timeout=3)
+                conn.request("POST", "/admin/recovery/setup", payload, {"Content-Type": "application/json", "Origin": "https://evil.example"})
+                self.assertEqual(403, conn.getresponse().status)
+                conn.close()
+                conn = HTTPConnection(host, port, timeout=3)
+                conn.request("POST", "/admin/recovery/setup", payload, {"Content-Type": "application/json", "Origin": f"https://{host}:{port}"})
+                self.assertEqual(204, conn.getresponse().status)
+                conn.close()
+                self.assertFalse(authorizer.needs_setup)
+            finally:
+                server.shutdown(); server.server_close()
+
     def test_pin_authorized_restore_rejects_non_admin_actor_and_audits_admin_actor(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
