@@ -129,9 +129,10 @@ class ProgramShellTests(unittest.TestCase):
     def test_navigation_and_identity_polish_lift_on_hover_and_rotate_tile_colors_per_visit(self):
         pages = (_menu_html(), _item_explorer_html(), _customer_explorer_html())
         for html in pages:
-            self.assertIn('body{background:#f7f0e5', html)
+            self.assertIn('body{background:#eadbc8', html)
             self.assertIn('.identity-picker-screen{position:fixed', html)
-            self.assertIn('transparent 30%),#f7f0e5', html)
+            self.assertIn('transparent 30%),#eadbc8', html)
+            self.assertIn('.identity-card{width:min(980px,100%);padding:clamp(22px,4vw,46px);border:3px solid #24272b;border-radius:22px;background:#fffdfa', html)
             self.assertIn('.identity-tile:hover{transform:translate(-2px,-2px);box-shadow:8px 8px 0 #24272b;outline:none}', html)
             self.assertIn('.identity-action:hover,.back:hover{transform:translate(-1px,-1px);box-shadow:0 4px 10px #24272b33}', html)
             self.assertIn('.identity-tile:focus-visible{transform:translate(-2px,-2px);box-shadow:9px 9px 0 #24272b;outline:3px solid #174d3e;outline-offset:3px}', html)
