@@ -162,7 +162,7 @@ class ProgramShellTests(unittest.TestCase):
         for html in (item_html, customer_html):
             self.assertNotIn("fetch('/api/staff')", html)
 
-    def test_main_menu_shares_the_warm_cream_shell_background_without_decoration(self):
+    def test_main_menu_shares_the_warm_cream_shell_background(self):
         html = _menu_html_body()
         self.assertIn("--canvas:#faf7f2", html)
         self.assertNotIn("#f5f5f7", html)
@@ -172,9 +172,46 @@ class ProgramShellTests(unittest.TestCase):
         self.assertIn(".card:hover,.card:focus-visible{border-color:#a9cfee", html)
         self.assertIn('href="customer-prices/"', html)
         self.assertIn("<h2>Customer Prices</h2><p>Search and safely edit imported customer-item price rows.</p></div><span class=\"open\">Open Customer Price →</span>", html)
-        lowered = html.lower()
-        for decoration in ("<svg", "radial-gradient", "@keyframes", "animation:", "plant", "leaf", "petal", "vine", "wave", "bubble", "fish", "coral", "aquatic"):
-            self.assertNotIn(decoration, lowered)
+
+    def test_main_menu_decoration_is_inert_low_contrast_and_confined_to_the_menu(self):
+        html = _menu_html_body()
+        # Inert: aria-hidden, non-focusable, pointer-events:none, never in tab order.
+        self.assertIn('<div class="menu-decor" aria-hidden="true">', html)
+        self.assertIn('focusable="false"', html)
+        self.assertNotIn("tabindex", html)
+        self.assertIn(".menu-decor{", html)
+        self.assertIn("pointer-events:none", html)
+        # 3-4 static, flat, low-contrast aquatic/botanical silhouette paths; no network assets.
+        shape_count = html.count('<path class="decor-shape"')
+        self.assertGreaterEqual(shape_count, 3)
+        self.assertLessEqual(shape_count, 4)
+        self.assertNotIn("url(http", html)
+        self.assertNotIn("<image", html)
+        # Fixed low-opacity token in the muted range, same-hue tint (existing accent, no new saturated color).
+        self.assertIn("--decor-opacity:.06", html)
+        self.assertIn("opacity:var(--decor-opacity)", html)
+        self.assertIn(".decor-shape{fill:var(--blue)}", html)
+        # Behind the module grid / in the outer gutters, never inside a card hit area; cards stay opaque and on top.
+        decor_rule = ".menu-decor{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:var(--decor-opacity);overflow:hidden;mask-image:radial-gradient(circle at 50% 45%,transparent 0,transparent 38%,#000 70%);-webkit-mask-image:radial-gradient(circle at 50% 45%,transparent 0,transparent 38%,#000 70%)}"
+        self.assertIn(decor_rule, html)
+        self.assertIn(".shell{max-width:900px;margin:auto;padding:56px 24px;position:relative;z-index:1}", html)
+        self.assertIn("background:var(--paper)", html)
+        # Bleeds only from the bottom/side edges; the content center stays clear.
+        self.assertIn("mask-image:radial-gradient(circle at 50% 45%,transparent 0,transparent 38%", html)
+        # No shadows, animation, hover behavior, or cursor changes on the decoration
+        # (the exact decor_rule match above already excludes any extra declarations).
+        self.assertNotIn(".menu-decor:hover", html)
+        self.assertNotIn(".decor-shape:hover", html)
+        self.assertNotIn("@keyframes", html)
+        # Hidden at narrow mobile widths and for forced-colors / prefers-contrast:more users.
+        self.assertIn("@media(max-width:620px){.grid{grid-template-columns:1fr}.menu-decor{display:none}}", html)
+        self.assertIn("@media(forced-colors:active),(prefers-contrast:more){.menu-decor{display:none}}", html)
+        # Confined to the Main Menu route only.
+        self.assertNotIn("menu-decor", _item_explorer_html())
+        self.assertNotIn("menu-decor", _customer_explorer_html())
+        # No Customer Price card/link/content change.
+        self.assertIn('href="customer-prices/"', html)
+        self.assertIn("<h2>Customer Prices</h2><p>Search and safely edit imported customer-item price rows.</p></div><span class=\"open\">Open Customer Price →</span>", html)
 
 
 if __name__ == "__main__":
