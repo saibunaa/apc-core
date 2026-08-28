@@ -8,6 +8,7 @@ import threading
 import hashlib
 from decimal import Decimal, InvalidOperation
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -732,12 +733,19 @@ def _customer_explorer_html() -> str:
     return _staff_identity_shell(html)
 
 
-def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None, customer_price_module=None, *, customer_lan_ingress: bool = False):
+def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None, customer_price_module=None, *, customer_lan_ingress: bool = False, recovery_authorizer=None, recovery_service=None, recovery_maintenance=None):
+    # A request holds this for its full lifetime. Recovery therefore cannot close/swap
+    # Core SQLite while an ordinary request is reading or writing it.
+    request_gate = threading.RLock()
     def _canonical_program_path(path: str) -> str:
         """Accept the canonical /program/ mount while keeping proxy-stripped routes compatible."""
         return path.removeprefix("/program") if path.startswith("/program/") else path
 
     class Handler(BaseHTTPRequestHandler):
+        def handle_one_request(self) -> None:
+            with request_gate:
+                super().handle_one_request()
+
         def _send_json(self, status: int, payload: dict) -> None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
@@ -752,6 +760,22 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                 # response was already formed, so do not crash the handler.
                 return
 
+        def _send_html(self, status: int, html: str, *, headers: tuple[tuple[str, str], ...] = ()) -> None:
+            body = html.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            for name, value in headers:
+                self.send_header(name, value)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _recovery_session_token(self) -> str | None:
+            cookie = SimpleCookie(self.headers.get("Cookie", ""))
+            morsel = cookie.get("apc_core_recovery_session")
+            return morsel.value if morsel is not None else None
+
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             if parsed.path == "/program":
@@ -760,6 +784,26 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                 self.end_headers()
                 return
             parsed = parsed._replace(path=_canonical_program_path(parsed.path))
+            if parsed.path == "/admin/recovery/":
+                if recovery_authorizer is None:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                elif recovery_authorizer.needs_setup:
+                    self._send_html(HTTPStatus.OK, recovery_authorizer.setup_html())
+                elif recovery_authorizer.is_authorized(self._recovery_session_token()):
+                    self._send_html(HTTPStatus.OK, recovery_authorizer.panel_html())
+                else:
+                    self._send_html(HTTPStatus.UNAUTHORIZED, recovery_authorizer.login_html())
+                return
+            if parsed.path == "/admin/recovery/audit":
+                if recovery_authorizer is None or not recovery_authorizer.is_authorized(self._recovery_session_token()):
+                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "recovery authorization required"})
+                    return
+                actor = parse_qs(parsed.query).get("actor", [""])[0]
+                if dict(explorer._local_store().active_staff()).get(actor) != "Admin":
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "designated Admin attribution required"})
+                    return
+                self._send_json(HTTPStatus.OK, {"entries": recovery_service.audit_entries()} if recovery_service is not None else {"entries": []})
+                return
             price_read_path = (parsed.path == "/customer-prices/" or parsed.path == "/customer-prices/api/staff" or parsed.path == "/customer-prices/api/customers" or parsed.path.startswith("/customer-prices/api/customers/"))
             if customer_price_module is not None and price_read_path and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
                 self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer price access is loopback-only unless customer LAN ingress is enabled"})
@@ -847,6 +891,84 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
 
         def do_POST(self) -> None:
             customer_path = _canonical_program_path(urlparse(self.path).path)
+            if recovery_service is not None and customer_path == "/admin/recovery/rollback":
+                if recovery_authorizer is None or not recovery_authorizer.is_authorized(self._recovery_session_token()):
+                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "recovery authorization required"})
+                    return
+                try:
+                    content_length = int(self.headers.get("Content-Length", "-1"))
+                    if content_length < 0 or content_length > 4096:
+                        raise ValueError
+                    payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                    if type(payload) is not dict or set(payload) != {"actor", "reason", "confirmation"}:
+                        raise ValueError
+                    if dict(explorer._local_store().active_staff()).get(payload["actor"]) != "Admin":
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "designated Admin attribution required"})
+                        return
+                    if recovery_maintenance is None:
+                        self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "recovery restart maintenance is unavailable"})
+                        return
+                    result = recovery_service.rollback(**payload, maintenance=recovery_maintenance)
+                    self._send_json(HTTPStatus.OK, result)
+                    threading.Thread(target=self.server.shutdown, daemon=True).start()
+                except (UnicodeDecodeError, json.JSONDecodeError, ValueError, sqlite3.Error):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid recovery rollback request"})
+                return
+            if recovery_service is not None and customer_path == "/admin/recovery/restore":
+                if recovery_authorizer is None or not recovery_authorizer.is_authorized(self._recovery_session_token()):
+                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "recovery authorization required"})
+                    return
+                try:
+                    content_length = int(self.headers.get("Content-Length", "-1"))
+                    if content_length < 0 or content_length > 4096:
+                        raise ValueError
+                    payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                    if type(payload) is not dict or set(payload) != {"snapshot_id", "actor", "reason", "confirmation"}:
+                        raise ValueError
+                    active_roles = dict(explorer._local_store().active_staff())
+                    if active_roles.get(payload["actor"]) != "Admin":
+                        self._send_json(HTTPStatus.FORBIDDEN, {"error": "designated Admin attribution required"})
+                        return
+                    if recovery_maintenance is None:
+                        self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "recovery restart maintenance is unavailable"})
+                        return
+                    result = recovery_service.prepare_restore(**payload, maintenance=recovery_maintenance)
+                    self._send_json(HTTPStatus.OK, result)
+                    threading.Thread(target=self.server.shutdown, daemon=True).start()
+                except (UnicodeDecodeError, json.JSONDecodeError, ValueError, sqlite3.Error):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid recovery restore request"})
+                return
+            if recovery_authorizer is not None and customer_path == "/admin/recovery/setup":
+                try:
+                    content_length = int(self.headers.get("Content-Length", "-1"))
+                    payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                    if type(payload) is not dict or set(payload) != {"pin", "confirmation"}:
+                        raise ValueError
+                    recovery_authorizer.setup(pin=payload["pin"], confirmation=payload["confirmation"])
+                except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Admin PIN was not saved"})
+                else:
+                    self._send_json(HTTPStatus.NO_CONTENT, {})
+                return
+            if recovery_authorizer is not None and customer_path == "/admin/recovery/login":
+                try:
+                    content_length = int(self.headers.get("Content-Length", "-1"))
+                    if content_length < 0 or content_length > 1024:
+                        raise ValueError
+                    payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                    if type(payload) is not dict or set(payload) != {"pin"}:
+                        raise ValueError
+                    token = recovery_authorizer.authenticate(pin=payload["pin"], client_id=self.client_address[0])
+                except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                    token = None
+                if token is None:
+                    self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "invalid recovery credentials"})
+                    return
+                self.send_response(HTTPStatus.NO_CONTENT)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Set-Cookie", f"apc_core_recovery_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=600")
+                self.end_headers()
+                return
             if customer_price_module is not None and customer_path.startswith("/customer-prices/api/customers/"):
                 if not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
                     self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer price mutations are loopback-only unless customer LAN ingress is enabled"})
