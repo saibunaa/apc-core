@@ -122,7 +122,7 @@ class ItemExplorerTests(unittest.TestCase):
                 self.assertIn("tr:nth-child(even)", items_html)
                 self.assertIn("tr:focus", items_html)
                 self.assertNotIn("Accepted local snapshot", items_html)
-                self.assertIn(".card:hover", menu_html)
+                self.assertIn(".card.mint:hover", menu_html)
                 conn.close()
 
                 for path in ("/api/items?q=river", "/items/api/items?q=river"):
