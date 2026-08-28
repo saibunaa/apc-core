@@ -9,10 +9,10 @@ from pathlib import Path
 class TestOrderExplorerContract(unittest.TestCase):
     """Fixture schema is the accepted read-only Order Explorer source contract.
 
-    MainDB__ORDER: Order No, Order Date, Cust ID, Customer Name
+    MainDB__ORDER: Order No, Order Date, Cust ID
     MainDB__ORDER_ITEM: Order No, Line No, Item ID, Qty
-    MainDB__CUST: Cust ID, Name
-    MainDB__CUST_CON: Cust ID, Order Config, Invoice Config
+    MainDB__CUST: Cust ID, Name, Inv Type
+    MainDB__CUST_CON: Cust ID, Com Code
     MainDB__CUST_CONSIGNEE: Cust ID, Consignee
     MainDB__CUST_NOTE: Cust ID, Order, Invoice
     MainDB__ITEM: Item ID, Description, Description TH
@@ -25,25 +25,25 @@ class TestOrderExplorerContract(unittest.TestCase):
         source = root / "accepted-order.sqlite"
         con = sqlite3.connect(source)
         tables = {
-            "MainDB__ORDER": '"Order No" TEXT, "Order Date" TEXT, "Cust ID" TEXT, "Customer Name" TEXT',
+            "MainDB__ORDER": '"Order No" TEXT, "Order Date" TEXT, "Cust ID" TEXT',
             "MainDB__ORDER_ITEM": '"Order No" TEXT, "Line No" TEXT, "Item ID" TEXT, "Qty" TEXT',
-            "MainDB__CUST": '"Cust ID" TEXT, "Name" TEXT',
-            "MainDB__CUST_CON": '"Cust ID" TEXT, "Order Config" TEXT, "Invoice Config" TEXT',
+            "MainDB__CUST": '"Cust ID" TEXT, "Name" TEXT, "Inv Type" TEXT',
+            "MainDB__CUST_CON": '"Cust ID" TEXT, "Com Code" TEXT',
             "MainDB__CUST_CONSIGNEE": '"Cust ID" TEXT, "Consignee" TEXT',
             "MainDB__CUST_NOTE": '"Cust ID" TEXT, "Order" TEXT, "Invoice" TEXT',
             "MainDB__ITEM": '"Item ID" TEXT, "Description" TEXT, "Description TH" TEXT',
         }
         if missing_column:
-            tables["MainDB__ORDER"] = '"Order No" TEXT, "Cust ID" TEXT, "Customer Name" TEXT'
+            tables["MainDB__ORDER"] = '"Order No" TEXT, "Cust ID" TEXT'
         for table, definition in tables.items():
             if table != missing_table:
                 con.execute(f'CREATE TABLE "{table}" ({definition})')
         if missing_table is None and not missing_column:
             con.executemany(
-                'INSERT INTO "MainDB__ORDER" VALUES (?, ?, ?, ?)',
+                'INSERT INTO "MainDB__ORDER" VALUES (?, ?, ?)',
                 [
-                    ("ORD/2026/001", "2026-08-29", "C/001", "บริษัท ไทย <script>alert(1)</script>"),
-                    ("ORD/2026/001-X", "2026-08-30", "C/002", "Other customer"),
+                    ("ORD/2026/001", "2026-08-29", "C/001"),
+                    ("ORD/2026/001-X", "2026-08-30", "C/002"),
                 ],
             )
             con.executemany(
@@ -56,12 +56,12 @@ class TestOrderExplorerContract(unittest.TestCase):
                 ],
             )
             con.executemany(
-                'INSERT INTO "MainDB__CUST" VALUES (?, ?)',
-                [("C/001", "บริษัท ไทย <script>alert(1)</script>"), ("C/002", "Other customer")],
+                'INSERT INTO "MainDB__CUST" VALUES (?, ?, ?)',
+                [("C/001", "บริษัท ไทย <script>alert(1)</script>", "invoice <b>config</b>"), ("C/002", "Other customer", "")],
             )
             con.executemany(
-                'INSERT INTO "MainDB__CUST_CON" VALUES (?, ?, ?)',
-                [("C/001", "order <b>config</b>", "invoice <b>config</b>"), ("C/002", "", "")],
+                'INSERT INTO "MainDB__CUST_CON" VALUES (?, ?)',
+                [("C/001", "order <b>config</b>"), ("C/002", "")],
             )
             con.executemany(
                 'INSERT INTO "MainDB__CUST_CONSIGNEE" VALUES (?, ?)',
@@ -167,12 +167,12 @@ class TestOrderExplorerContract(unittest.TestCase):
             connection = sqlite3.connect(source)
             # These accepted customers deliberately have no MainDB__ORDER row.
             connection.executemany(
-                'INSERT INTO "MainDB__CUST" VALUES (?, ?)',
-                [("C/NO-ORDER", "No order customer"), ("C/NO-OTHER", "Another no order customer")],
+                'INSERT INTO "MainDB__CUST" VALUES (?, ?, ?)',
+                [("C/NO-ORDER", "No order customer", "resolved invoice config"), ("C/NO-OTHER", "Another no order customer", "")],
             )
             connection.execute(
-                'INSERT INTO "MainDB__CUST_CON" VALUES (?, ?, ?)',
-                ("C/NO-ORDER", "resolved order config", "resolved invoice config"),
+                'INSERT INTO "MainDB__CUST_CON" VALUES (?, ?)',
+                ("C/NO-ORDER", "resolved order config"),
             )
             connection.execute(
                 'INSERT INTO "MainDB__CUST_CONSIGNEE" VALUES (?, ?)',
