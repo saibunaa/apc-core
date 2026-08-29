@@ -261,7 +261,7 @@ class AWBRoutingTests(unittest.TestCase):
         self.addCleanup(server.shutdown)
         return server.server_address
 
-    def test_absent_awb_keeps_shipments_coming_soon_and_routes_unregistered(self):
+    def test_absent_awb_hides_shipments_and_leaves_routes_unregistered(self):
         with tempfile.TemporaryDirectory() as tmp:
             host, port = self.serve(tmp, None)
             conn = HTTPConnection(host, port, timeout=3)
@@ -269,11 +269,20 @@ class AWBRoutingTests(unittest.TestCase):
             menu = conn.getresponse()
             menu_html = menu.read().decode("utf-8")
             self.assertEqual(200, menu.status)
-            self.assertIn("Shipment tracking will appear here.", menu_html)
+            self.assertNotIn("Shipments", menu_html)
+            self.assertNotIn("Shipment tracking will appear here.", menu_html)
             self.assertNotIn('href="shipments/"', menu_html)
 
-            conn.request("GET", "/shipments/")
-            self.assertEqual(404, conn.getresponse().status)
+            for route in (
+                "/shipments",
+                "/shipments/",
+                "/shipments/api/shipments",
+                "/shipments/api/shipments/KG%2F2026%2F004",
+            ):
+                conn.request("GET", route)
+                response = conn.getresponse()
+                self.assertEqual(404, response.status)
+                response.read()
 
     def test_shipment_page_and_api_are_served_read_only(self):
         with tempfile.TemporaryDirectory() as tmp:

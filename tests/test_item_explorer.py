@@ -105,12 +105,25 @@ class ItemExplorerTests(unittest.TestCase):
                 self.assertIn("Items", menu_html)
                 self.assertNotIn("legacy", menu_html.lower())
                 self.assertNotIn("snapshot", menu_html.lower())
-                for module in ("Orders", "Customers", "Shipments", "Activity"):
-                    self.assertIn(module, menu_html)
-                # This fixture has no AWB explorer, so Shipments and Activity remain placeholders.
-                self.assertEqual(2, menu_html.count("Coming soon"))
-                self.assertNotIn('<a class="card amber" href="shipments/"', menu_html)
+                for module, href in (
+                    ("Orders", 'href="orders/"'),
+                    ("Customers", 'href="customers/"'),
+                    ("Shipments", 'href="shipments/"'),
+                ):
+                    self.assertNotIn(module, menu_html)
+                    self.assertNotIn(href, menu_html)
+                self.assertIn("Activity", menu_html)
+                self.assertNotIn('href="activity/"', menu_html)
+                self.assertEqual(1, menu_html.count("Coming soon"))
                 conn.close()
+
+                for path in ("/orders/", "/customers/", "/shipments/", "/activity/"):
+                    conn = HTTPConnection(host, port, timeout=3)
+                    conn.request("GET", path)
+                    response = conn.getresponse()
+                    response.read()
+                    self.assertEqual(404, response.status)
+                    conn.close()
 
                 conn = HTTPConnection(host, port, timeout=3)
                 conn.request("GET", "/items/")

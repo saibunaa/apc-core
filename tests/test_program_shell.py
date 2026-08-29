@@ -245,6 +245,39 @@ class ProgramShellTests(unittest.TestCase):
         self.assertIn('href="customer-prices/"', html)
         self.assertIn("<h2>Customer Prices</h2><p>Search and safely edit imported customer-item price rows.</p></div><span class=\"open\">Open Customer Price →</span>", html)
 
+    def test_main_menu_hides_unavailable_optional_module_cards(self):
+        html = _menu_html_body(
+            customer_available=False,
+            customer_prices_available=False,
+            orders_available=False,
+            awb_available=False,
+        )
+        self.assertIn('href="items/"', html)
+        for route, label in (("customers/", "Customers"), ("customer-prices/", "Customer Prices"), ("orders/", "Orders"), ("shipments/", "Shipments")):
+            self.assertNotIn(route, html)
+            self.assertNotIn(f"<h2>{label}</h2>", html)
+
+    def test_items_only_handler_does_not_handle_optional_module_routes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            explorer = ItemExplorer(_snapshot(root), data_dir=root / "state")
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(explorer, {"accepted": True}))
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                port = int(server.server_address[1])
+                for path in ("/program/items/", "/program/customers/", "/program/customer-prices/", "/program/orders/", "/program/shipments/"):
+                    connection = HTTPConnection("127.0.0.1", port, timeout=3)
+                    connection.request("GET", path)
+                    response = connection.getresponse()
+                    response.read()
+                    connection.close()
+                    self.assertEqual(200 if path.endswith("items/") else 404, response.status, path)
+            finally:
+                server.shutdown()
+                server.server_close()
+                explorer.close()
+
     def test_order_forms_are_canonical_get_only_routes_with_no_mutation_fallthrough(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

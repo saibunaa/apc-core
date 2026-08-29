@@ -721,27 +721,38 @@ def _menu_html_body_existing() -> str:
     return """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>APC Core</title><style>:root{--ink:#202124;--muted:#6e737b;--line:#e6e6e8;--canvas:#eadbc8;--paper:#fff;--accent:#1d6b57;--mint-tint:#dff3ea;--mint-mid:#5fb890;--pink-tint:#fbe4ea;--pink-mid:#e2809a;--blue-tint:#e4edfc;--blue-mid:#6fa3e0;--amber-tint:#fdf1d4;--amber-mid:#d9ad42}*{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--ink);font:15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.shell{max-width:900px;margin:auto;padding:56px 24px;position:relative;z-index:1}.brand{font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:18px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.card{min-height:156px;border:2px solid var(--line);border-radius:20px;background:var(--paper);padding:22px;text-decoration:none;color:inherit;display:flex;flex-direction:column;justify-content:space-between;box-shadow:4px 4px 0 rgba(32,33,36,.14);transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease}.card h2{font-size:21px;margin:0}.card.mint{background:var(--mint-tint);border-color:var(--mint-mid)}.card.pink{background:var(--pink-tint);border-color:var(--pink-mid)}.card.blue{background:var(--blue-tint);border-color:var(--blue-mid)}.card.amber{background:var(--amber-tint);border-color:var(--amber-mid)}.card.mint:hover,.card.mint:focus-visible{transform:translate(-2px,-2px);box-shadow:6px 6px 0 rgba(95,184,144,.45)}.card.pink:hover,.card.pink:focus-visible{transform:translate(-2px,-2px);box-shadow:6px 6px 0 rgba(226,128,154,.45)}.card.blue:hover,.card.blue:focus-visible{transform:translate(-2px,-2px);box-shadow:6px 6px 0 rgba(111,163,224,.45)}.card.amber:hover,.card.amber:focus-visible{transform:translate(-2px,-2px);box-shadow:6px 6px 0 rgba(217,173,66,.45)}.card:focus-visible{outline:3px solid var(--accent);outline-offset:3px}.card p{color:var(--muted)}.open{font-weight:600;color:var(--accent)}.card.soon{background:#fbf9f5;border:2px dashed var(--line);box-shadow:none;opacity:.75}.label{font-size:12px}@media(max-width:620px){.grid{grid-template-columns:1fr}}</style><body><main class="shell"><div class="brand">APC Core</div><section class="grid" aria-label="APC Core modules"><a class="card mint" href="items/"><div><h2>Items</h2><p>Search and inspect the item catalogue.</p></div><span class="open">Open Item Explorer →</span></a><div class="card soon"><div><h2>Orders</h2><p>Order work will appear here.</p></div><span class="label">Coming soon</span></div><a class="card pink" href="customers/"><div><h2>Customers</h2><p>Search and inspect Core-owned customer records.</p></div><span class="open">Open Customer Explorer →</span></a><a class="card blue" href="customer-prices/"><div><h2>Customer Prices</h2><p>Search and safely edit imported customer-item price rows.</p></div><span class="open">Open Customer Price →</span></a><div class="card soon"><div><h2>Shipments</h2><p>Shipment tracking will appear here.</p></div><span class="label">Coming soon</span></div><div class="card soon"><div><h2>Activity</h2><p>Shared activity will appear here.</p></div><span class="label">Coming soon</span></div></section></main></body></html>"""
 
 
-def _menu_html_body(awb_available: bool = False) -> str:
+def _menu_html_body(*, customer_available: bool = True, customer_prices_available: bool = True, orders_available: bool = True, awb_available: bool | None = None) -> str:
     body = _menu_html_body_existing().replace(
         '<div class="card soon"><div><h2>Orders</h2><p>Order work will appear here.</p></div><span class="label">Coming soon</span></div>',
         "",
         1,
     )
-    if awb_available:
+    if awb_available is True:
         body = body.replace(
             '<div class="card soon"><div><h2>Shipments</h2><p>Shipment tracking will appear here.</p></div><span class="label">Coming soon</span></div>',
             '<a class="card amber" href="shipments/"><div><span class="label">Read-only</span><h2>Shipments</h2><p>Browse A.W.B. shipment records and freight provenance.</p></div><span class="open">Open Shipments &rarr;</span></a>',
             1,
         )
-    return body.replace(
+    elif awb_available is False:
+        body = body.replace(
+            '<div class="card soon"><div><h2>Shipments</h2><p>Shipment tracking will appear here.</p></div><span class="label">Coming soon</span></div>',
+            "",
+            1,
+        )
+    body = body.replace(
         '<section class="grid" aria-label="APC Core modules">',
-        '<section class="grid" aria-label="APC Core modules"><a class="card mint" href="orders/"><div><span class="label">Read-only</span><h2>Orders</h2><p>Open and review saved order forms and customer templates.</p></div><span class="open">Open Orders →</span></a>',
+        '<section class="grid" aria-label="APC Core modules">' + ('<a class="card mint" href="orders/"><div><span class="label">Read-only</span><h2>Orders</h2><p>Open and review saved order forms and customer templates.</p></div><span class="open">Open Orders →</span></a>' if orders_available else ''),
         1,
     )
+    if not customer_available:
+        body = body.replace('<a class="card pink" href="customers/"><div><h2>Customers</h2><p>Search and inspect Core-owned customer records.</p></div><span class="open">Open Customer Explorer →</span></a>', '', 1)
+    if not customer_prices_available:
+        body = body.replace('<a class="card blue" href="customer-prices/"><div><h2>Customer Prices</h2><p>Search and safely edit imported customer-item price rows.</p></div><span class="open">Open Customer Price →</span></a>', '', 1)
+    return body
 
 
-def _menu_html(*, awb_available: bool = False) -> str:
-    return _staff_identity_shell(_menu_html_body(awb_available))
+def _menu_html(*, customer_available: bool = True, customer_prices_available: bool = True, orders_available: bool = True, awb_available: bool | None = None) -> str:
+    return _staff_identity_shell(_menu_html_body(customer_available=customer_available, customer_prices_available=customer_prices_available, orders_available=orders_available, awb_available=awb_available))
 
 
 def _item_explorer_html_body() -> str:
@@ -915,7 +926,7 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                 self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer access is loopback-only unless customer LAN ingress is enabled"})
                 return
             if parsed.path == "/":
-                body = _menu_html(awb_available=awb_explorer is not None).encode("utf-8")
+                body = _menu_html(customer_available=customer_explorer is not None, customer_prices_available=customer_price_module is not None, orders_available=order_explorer is not None, awb_available=awb_explorer is not None).encode("utf-8")
                 self.send_response(HTTPStatus.OK); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
             if order_explorer is not None and parsed.path == "/orders":
                 self.send_response(HTTPStatus.PERMANENT_REDIRECT)
