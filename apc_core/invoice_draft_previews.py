@@ -25,8 +25,8 @@ class InvoiceDraftPreviewRegistry:
                 del self._pending[ref]
 
     def issue(self, proposal, accepted_snapshot_sha256):
-        if type(proposal) is not dict or proposal.get("ready_to_save") is not True:
-            raise ValueError("only ready server-built proposals may be previewed")
+        if type(proposal) is not dict or type(proposal.get("ready_to_save")) is not bool:
+            raise ValueError("only server-built proposals may be previewed")
         if type(accepted_snapshot_sha256) is not str or len(accepted_snapshot_sha256) != 64:
             raise ValueError("invalid accepted snapshot")
         now = self._clock()
