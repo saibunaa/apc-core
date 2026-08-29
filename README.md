@@ -24,3 +24,9 @@ For an isolated recovery test workspace only, supply the PIN through the process
 APC_CORE_DATA_DIR=/tmp/apc-core-test-state APC_CORE_RECOVERY_TEST_PIN='<test PIN>' \
   python3 -m apc_core.server --manifest state/accepted_snapshot.json --port 8769
 ```
+
+## Mini candidate manifest
+
+`docker-compose.mini.yml` is a **candidate-only** deployment contract for Mini; it is not a live deployment instruction. It remains inert until an operator explicitly supplies a candidate image tag, container name, accepted-state directory, Core-data directory, canonical allowed mutation origin, and (optionally, defaulting to `mini-host`) Docker network. It has no host-port mapping, uses an external private network, runs non-root with a read-only root filesystem, and defaults its candidate restart policy to `no`.
+
+Use only non-secret environment provisioning outside the repository. Any use or promotion of this candidate requires a **fresh promotion gate**; do not reuse an earlier approval or infer live readiness from this manifest.

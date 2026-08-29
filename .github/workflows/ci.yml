@@ -39,3 +39,73 @@ jobs:
             echo "Rendered Compose config must not expose host ports" >&2
             exit 1
           fi
+      - name: Verify Mini candidate manifest is inert and hardened
+        run: |
+          set -euo pipefail
+          export APC_CORE_IMAGE_TAG=ci-candidate
+          export APC_CORE_CONTAINER_NAME=apc-core-ci-candidate
+          export APC_CORE_ACCEPTED_STATE_DIR=/tmp/ci-accepted-state
+          export APC_CORE_DATA_DIR=/tmp/ci-core-data
+          export APC_CORE_ALLOWED_MUTATION_ORIGINS=https://ci.invalid
+          export APC_CORE_DOCKER_NETWORK=ci-mini-private
+          export APC_CORE_CANDIDATE_RESTART_POLICY=no
+          required_vars=(
+            APC_CORE_IMAGE_TAG
+            APC_CORE_CONTAINER_NAME
+            APC_CORE_ACCEPTED_STATE_DIR
+            APC_CORE_DATA_DIR
+            APC_CORE_ALLOWED_MUTATION_ORIGINS
+          )
+          for required in "${required_vars[@]}"; do
+            if env -u "$required" docker compose --env-file /dev/null -f docker-compose.mini.yml config --quiet; then
+              echo "Mini manifest unexpectedly accepted unset $required" >&2
+              exit 1
+            fi
+            if env "$required=" docker compose --env-file /dev/null -f docker-compose.mini.yml config --quiet; then
+              echo "Mini manifest unexpectedly accepted empty $required" >&2
+              exit 1
+            fi
+          done
+          docker compose --env-file /dev/null -f docker-compose.mini.yml config --format json | python -c '
+          import json
+          import sys
+
+          config = json.load(sys.stdin)
+          service = config["services"]["apc-core"]
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+          require(service.get("user") == "1000:1000", "Mini service must run as the configured non-root user")
+          require(service.get("restart") == "no", "Mini candidate restart policy must be no")
+          require(not service.get("ports"), "Rendered Mini candidate manifest must not expose host ports")
+          require(service.get("read_only") is True, "Mini service filesystem must be read-only")
+          require("/tmp:mode=1777" in service.get("tmpfs", []), "Mini service must provide the expected tmpfs")
+          require("no-new-privileges:true" in service.get("security_opt", []), "Mini service must enable no-new-privileges")
+          require("ALL" in service.get("cap_drop", []), "Mini service must drop all capabilities")
+          require(
+              service.get("environment", {}).get("APC_CORE_ALLOWED_MUTATION_ORIGINS") == "https://ci.invalid",
+              "Mini service must receive the CI dummy mutation origin",
+          )
+
+          networks = service.get("networks", {})
+          require(set(networks) == {"mini-private"}, "Mini service must use only the expected private network")
+          network = config.get("networks", {}).get("mini-private", {})
+          require(network.get("external") is True, "Mini network must be external")
+          require(network.get("name") == "ci-mini-private", "Mini network must resolve to the CI dummy network")
+
+          volumes = service.get("volumes", [])
+          require(len(volumes) == 2, "Mini service must have exactly two bind mounts")
+
+          def require_bind(target, source, read_only):
+              matches = [volume for volume in volumes if volume.get("target") == target]
+              require(len(matches) == 1, f"Mini service must have exactly one {target} mount")
+              volume = matches[0]
+              require(volume.get("type") == "bind", f"{target} mount must be a bind mount")
+              require(volume.get("source") == source, f"{target} mount must resolve to the CI dummy source")
+              require(volume.get("read_only", False) is read_only, f"{target} mount has the wrong read-only mode")
+
+          require_bind("/state", "/tmp/ci-accepted-state", True)
+          require_bind("/core-data", "/tmp/ci-core-data", False)
+          '

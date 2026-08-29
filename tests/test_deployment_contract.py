@@ -6,8 +6,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_PATH = ROOT / "docker-compose.yml"
+MINI_COMPOSE_PATH = ROOT / "docker-compose.mini.yml"
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 CI_REQUIREMENTS_PATH = ROOT / "requirements-ci.txt"
+README_PATH = ROOT / "README.md"
 
 
 class DeploymentContractTests(unittest.TestCase):
@@ -100,6 +102,83 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn("APC_CORE_ALLOWED_MUTATION_ORIGINS: https://ci.invalid", workflow)
         self.assertIn("grep -Eq '^[[:space:]]*ports:'", workflow)
         self.assertNotIn("${{ secrets.", workflow)
+
+    def test_mini_candidate_manifest_is_inert_until_required_values_are_explicit(self):
+        compose = MINI_COMPOSE_PATH.read_text(encoding="utf-8")
+
+        for required in (
+            "APC_CORE_IMAGE_TAG",
+            "APC_CORE_CONTAINER_NAME",
+            "APC_CORE_ACCEPTED_STATE_DIR",
+            "APC_CORE_DATA_DIR",
+            "APC_CORE_ALLOWED_MUTATION_ORIGINS",
+        ):
+            self.assertIn(
+                f"${{{required}:?set {required}}}",
+                compose,
+            )
+        self.assertIn("${APC_CORE_DOCKER_NETWORK:-mini-host}", compose)
+        self.assertNotIn("/home/", compose)
+        self.assertNotIn("http://", compose)
+        self.assertNotIn("https://", compose)
+
+    def test_mini_candidate_manifest_preserves_hardening_and_private_network_contract(self):
+        compose = MINI_COMPOSE_PATH.read_text(encoding="utf-8")
+
+        for required in (
+            'user: "1000:1000"',
+            "read_only: true",
+            "- /tmp:mode=1777",
+            "type: bind",
+            "target: /state",
+            "target: /core-data",
+            "- no-new-privileges:true",
+            "cap_drop:",
+            "- ALL",
+            "external: true",
+            'restart: "${APC_CORE_CANDIDATE_RESTART_POLICY:-no}"',
+        ):
+            self.assertIn(required, compose)
+        self.assertNotIn("ports:", compose)
+
+    def test_mini_candidate_manifest_source_disables_host_path_creation_for_each_bind(self):
+        compose = MINI_COMPOSE_PATH.read_text(encoding="utf-8")
+
+        for target in ("/state", "/core-data"):
+            mount = compose.split(f"target: {target}", 1)[1].split("- type: bind", 1)[0]
+            self.assertIn("create_host_path: false", mount)
+
+    def test_ci_structurally_validates_the_normalized_mini_candidate_render(self):
+        workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("docker compose --env-file /dev/null -f docker-compose.mini.yml config --quiet", workflow)
+        self.assertIn('env -u "$required"', workflow)
+        self.assertIn('env "$required="', workflow)
+        self.assertIn("APC_CORE_DOCKER_NETWORK=ci-mini-private", workflow)
+        self.assertIn("APC_CORE_CANDIDATE_RESTART_POLICY=no", workflow)
+        self.assertIn("config --format json", workflow)
+        self.assertIn("json.load(sys.stdin)", workflow)
+        self.assertIn('service = config["services"]["apc-core"]', workflow)
+        self.assertIn('service.get("user") == "1000:1000"', workflow)
+        self.assertIn('service.get("restart") == "no"', workflow)
+        self.assertIn('not service.get("ports")', workflow)
+        self.assertIn('network.get("external") is True', workflow)
+        self.assertIn('network.get("name") == "ci-mini-private"', workflow)
+        self.assertIn('"no-new-privileges:true" in service.get("security_opt", [])', workflow)
+        self.assertIn('"ALL" in service.get("cap_drop", [])', workflow)
+        self.assertIn('service.get("read_only") is True', workflow)
+        self.assertIn('"/tmp:mode=1777" in service.get("tmpfs", [])', workflow)
+        self.assertIn('service.get("environment", {}).get("APC_CORE_ALLOWED_MUTATION_ORIGINS")', workflow)
+        self.assertNotIn('"create_host_path") is False', workflow)
+        self.assertNotIn("grep -F \"$expected\"", workflow)
+
+    def test_readme_marks_mini_manifest_candidate_only_and_requires_fresh_promotion_gate(self):
+        readme = README_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("docker-compose.mini.yml", readme)
+        self.assertIn("candidate-only", readme)
+        self.assertIn("fresh promotion gate", readme)
+        self.assertNotIn("apc-core:0c76d66-hardened-candidate-20260829", readme)
 
 
 if __name__ == "__main__":
