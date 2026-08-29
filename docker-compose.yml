@@ -13,6 +13,7 @@ services:
     environment:
       APC_CORE_ARTIFACT_ROOT: /state
       APC_CORE_DATA_DIR: /core-data
+      APC_CORE_ALLOWED_MUTATION_ORIGINS: ${APC_CORE_ALLOWED_MUTATION_ORIGINS:?set APC_CORE_ALLOWED_MUTATION_ORIGINS}
     networks:
       - apc-program-preview-net
     security_opt:
