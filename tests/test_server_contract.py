@@ -100,6 +100,111 @@ class ServerContractTests(unittest.TestCase):
             price_factory.assert_called_once_with(descriptor, accepted, data_dir=None)
             order_factory.assert_called_once_with(descriptor, accepted)
 
+    def test_customer_price_order_runtime_does_not_construct_awb_explorer_when_manifest_declares_awb_unavailable(self):
+        """A valid source AWB table cannot override an unavailable accepted capability."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            accepted = root / "accepted.sqlite"
+            accepted.write_bytes(b"accepted artifact")
+            descriptor = os.open(accepted, os.O_RDONLY | os.O_NOFOLLOW)
+            manifest = {
+                "customer_ready": True,
+                "required_customer_columns": ["Cust ID", "Name"],
+                "accepted_artifact_sha256": "accepted-hash",
+                "capabilities": {"awb_shipments": {"ready": False, "status": "unavailable"}},
+            }
+            items = Mock()
+            customers = Mock()
+            customers.reconciliation_status.return_value = {"source_sha256": "accepted-hash", "state": "ready"}
+            prices = Mock()
+            prices.reconciliation_status.return_value = {"state": "ready"}
+            orders = Mock()
+            from apc_core import server
+            with patch.object(server, "_read_accepted_manifest", return_value=(descriptor, accepted, manifest)), \
+                 patch.object(server.ItemExplorer, "from_open_descriptor", return_value=items), \
+                 patch.object(server, "CustomerExplorer", return_value=customers), \
+                 patch.object(server.CustomerPriceModule, "from_open_descriptor", return_value=prices), \
+                 patch.object(server.OrderExplorer, "from_open_descriptor", return_value=orders), \
+                 patch.object(server.AWBExplorer, "from_open_descriptor", return_value=Mock()) as awb_factory:
+                _, _, _, _, loaded_awb, loaded_manifest = server.load_accepted_customer_price_order_runtime(root / "substituted.sqlite")
+
+            self.assertIsNone(loaded_awb)
+            self.assertEqual(manifest, loaded_manifest)
+            awb_factory.assert_not_called()
+
+    def test_customer_price_order_runtime_fails_closed_for_missing_or_malformed_awb_capability(self):
+        """Legacy/malformed capability data leaves Orders and other valid modules available."""
+        capability_cases = (
+            None,
+            {},
+            {"awb_shipments": None},
+            {"awb_shipments": {"ready": True}},
+            {"awb_shipments": {"ready": 1, "status": "verified"}},
+            {"awb_shipments": {"ready": True, "status": "unavailable"}},
+        )
+        for capabilities in capability_cases:
+            with self.subTest(capabilities=capabilities), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                accepted = root / "accepted.sqlite"
+                accepted.write_bytes(b"accepted artifact")
+                descriptor = os.open(accepted, os.O_RDONLY | os.O_NOFOLLOW)
+                manifest = {
+                    "customer_ready": True,
+                    "required_customer_columns": ["Cust ID", "Name"],
+                    "accepted_artifact_sha256": "accepted-hash",
+                }
+                if capabilities is not None:
+                    manifest["capabilities"] = capabilities
+                items = Mock()
+                customers = Mock()
+                customers.reconciliation_status.return_value = {"source_sha256": "accepted-hash", "state": "ready"}
+                prices = Mock()
+                prices.reconciliation_status.return_value = {"state": "ready"}
+                orders = Mock()
+                from apc_core import server
+                with patch.object(server, "_read_accepted_manifest", return_value=(descriptor, accepted, manifest)), \
+                     patch.object(server.ItemExplorer, "from_open_descriptor", return_value=items), \
+                     patch.object(server, "CustomerExplorer", return_value=customers), \
+                     patch.object(server.CustomerPriceModule, "from_open_descriptor", return_value=prices), \
+                     patch.object(server.OrderExplorer, "from_open_descriptor", return_value=orders), \
+                     patch.object(server.AWBExplorer, "from_open_descriptor", return_value=Mock()) as awb_factory:
+                    loaded_items, loaded_customers, loaded_prices, loaded_orders, loaded_awb, loaded_manifest = server.load_accepted_customer_price_order_runtime(root / "substituted.sqlite")
+
+                self.assertEqual((items, customers, prices, orders, manifest), (loaded_items, loaded_customers, loaded_prices, loaded_orders, loaded_manifest))
+                self.assertIsNone(loaded_awb)
+                awb_factory.assert_not_called()
+
+    def test_customer_price_order_runtime_keeps_awb_source_schema_validation_after_verified_capability(self):
+        """Manifest capability cannot override AWBExplorer's source-contract validation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            accepted = root / "accepted.sqlite"
+            accepted.write_bytes(b"accepted artifact")
+            descriptor = os.open(accepted, os.O_RDONLY | os.O_NOFOLLOW)
+            manifest = {
+                "customer_ready": True,
+                "required_customer_columns": ["Cust ID", "Name"],
+                "accepted_artifact_sha256": "accepted-hash",
+                "capabilities": {"awb_shipments": {"ready": True, "status": "verified"}},
+            }
+            items = Mock()
+            customers = Mock()
+            customers.reconciliation_status.return_value = {"source_sha256": "accepted-hash", "state": "ready"}
+            prices = Mock()
+            prices.reconciliation_status.return_value = {"state": "ready"}
+            orders = Mock()
+            from apc_core import server
+            with patch.object(server, "_read_accepted_manifest", return_value=(descriptor, accepted, manifest)), \
+                 patch.object(server.ItemExplorer, "from_open_descriptor", return_value=items), \
+                 patch.object(server, "CustomerExplorer", return_value=customers), \
+                 patch.object(server.CustomerPriceModule, "from_open_descriptor", return_value=prices), \
+                 patch.object(server.OrderExplorer, "from_open_descriptor", return_value=orders), \
+                 patch.object(server.AWBExplorer, "from_open_descriptor", side_effect=server.AWBSourceContractError) as awb_factory:
+                _, _, _, _, loaded_awb, _ = server.load_accepted_customer_price_order_runtime(root / "substituted.sqlite")
+
+            self.assertIsNone(loaded_awb)
+            awb_factory.assert_called_once_with(descriptor, accepted)
+
     def test_main_passes_accepted_order_explorer_to_handler_and_closes_it_with_core_modules(self):
         """Production composition exposes Order Forms only through the accepted runtime loader."""
         import sys

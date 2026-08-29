@@ -166,10 +166,21 @@ def load_accepted_customer_price_order_runtime(manifest_path: Path, *, data_dir:
         order_explorer = OrderExplorer.from_open_descriptor(descriptor, artifact_path)
         # Shipments are optional: a snapshot exported before the AWB tables were
         # included must still serve every other module. The menu card stays
-        # "Coming soon" and no /shipments/ route is registered.
-        try:
-            awb_explorer = AWBExplorer.from_open_descriptor(descriptor, artifact_path)
-        except (AWBSourceContractError, OSError, sqlite3.Error):
+        # "Coming soon" and no /shipments/ route is registered. Manifest
+        # capability is authoritative; absent or malformed declarations deny AWB.
+        capabilities = manifest.get("capabilities")
+        awb_capability = capabilities.get("awb_shipments") if type(capabilities) is dict else None
+        if (
+            type(awb_capability) is dict
+            and awb_capability.get("ready") is True
+            and type(awb_capability.get("status")) is str
+            and awb_capability["status"] == "verified"
+        ):
+            try:
+                awb_explorer = AWBExplorer.from_open_descriptor(descriptor, artifact_path)
+            except (AWBSourceContractError, OSError, sqlite3.Error):
+                awb_explorer = None
+        else:
             awb_explorer = None
         return item_explorer, customer_explorer, price_module, order_explorer, awb_explorer, manifest
     except RuntimeContractError:
