@@ -63,7 +63,8 @@ class InvoiceConversionSourceTests(unittest.TestCase):
             original = source.read_bytes()
             lookups = []
 
-            def current_price(item_id):
+            def current_price(customer_id, item_id):
+                self.assertEqual("C/1", customer_id)
                 lookups.append(item_id)
                 return {"status": "FOUND", "value": "13.75"} if item_id == "ITEM/KNOWN" else None
 
@@ -89,7 +90,8 @@ class InvoiceConversionSourceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             source = self.make_source(Path(temporary))
 
-            def current_price(item_id):
+            def current_price(customer_id, item_id):
+                self.assertEqual("C/1", customer_id)
                 if item_id == "ITEM/UNKNOWN":
                     raise RuntimeError("lookup unavailable")
                 return {"status": "FOUND", "value": "13.75"}
@@ -143,6 +145,30 @@ class InvoiceConversionSourceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 reader.discover_legacy_candidates("C/1", "2026-08-02", limit="bad")
             reader.close()
+
+    def test_from_open_descriptor_is_pinned_when_pathname_is_replaced(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = self.make_source(root)
+            descriptor = __import__("os").open(source, __import__("os").O_RDONLY)
+            replacement = root / "replacement.sqlite"
+            self.make_source(root / "replacement-root") if False else None
+            connection = sqlite3.connect(replacement)
+            connection.execute('CREATE TABLE "MainDB__ORDER" ("Order No" TEXT, "Order Date" TEXT, "Cust ID" TEXT)')
+            connection.execute('CREATE TABLE "MainDB__ORDER_ITEM" ("Order No" TEXT, "Line No" TEXT, "Item ID" TEXT, "Qty" TEXT)')
+            connection.execute('CREATE TABLE "MainDB__CUST" ("Cust ID" TEXT, "Name" TEXT)')
+            connection.execute('INSERT INTO "MainDB__ORDER" VALUES (?,?,?)', ("REPLACED", "2026-01-01", "C-X"))
+            connection.commit(); connection.close()
+            held_original = root / "held-original.sqlite"
+            __import__("os").replace(source, held_original)
+            __import__("os").replace(replacement, source)
+            try:
+                reader = InvoiceConversionSource.from_open_descriptor(descriptor, source)
+                self.assertEqual("ORD/2026/01", reader.read_order("ORD/2026/01")["order_id"])
+                self.assertIsNone(reader.read_order("REPLACED"))
+                reader.close()
+            finally:
+                __import__("os").close(descriptor)
 
     def test_initialization_failure_closes_opened_source_descriptor(self):
         with tempfile.TemporaryDirectory() as temporary:

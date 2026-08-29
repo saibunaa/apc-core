@@ -21,11 +21,21 @@ def _line_preview(order_id, line):
     if any(type(line.get(field)) is not str or not line[field] for field in required):
         raise ValueError("invalid selected line")
     result = {"order_id": order_id, "line_ref": line["line_ref"], "item_id": line["item_id"], "quantity": line["quantity"]}
-    for field in ("unit_price", "source_annotation"):
+    for field in ("unit_price", "source_annotation", "source_unit_price"):
         if field in line:
             if type(line[field]) is not str:
                 raise ValueError("invalid selected line")
             result[field] = line[field]
+    if "current_price" in line:
+        current_price = line["current_price"]
+        if (
+            type(current_price) is not dict
+            or set(current_price) != {"status", "value"}
+            or type(current_price["status"]) is not str
+            or type(current_price["value"]) is not str
+        ):
+            raise ValueError("invalid selected line")
+        result["current_price"] = dict(current_price)
     return result
 
 
@@ -98,12 +108,32 @@ def build_invoice_draft(source_provenance, orders, selected_order_ids, decisions
             raise ValueError("empty selected order")
         for line in order_lines:
             frozen = _line_preview(order_id, line)
-            if frozen["line_ref"] in seen_refs:
+            ref_key = (order_id, frozen["line_ref"])
+            if ref_key in seen_refs:
                 raise ValueError("duplicate selected line ref")
-            seen_refs.add(frozen["line_ref"])
+            seen_refs.add(ref_key)
             lines.append(frozen)
             if "source_annotation" in frozen:
                 annotations.append({"order_id": order_id, "line_ref": frozen["line_ref"], "value": frozen["source_annotation"]})
+            if (
+                "source_unit_price" in frozen
+                and (
+                    not frozen["source_unit_price"]
+                    or frozen.get("current_price", {}).get("status") == "UNKNOWN"
+                    or not frozen.get("current_price", {}).get("value", "")
+                )
+            ):
+                unresolved.append({"reason": "source/current price unresolved", "order_id": order_id, "line_ref": frozen["line_ref"]})
+        extra_annotations = entry.get("annotations", ())
+        if type(extra_annotations) not in (list, tuple):
+            raise ValueError("invalid annotations")
+        for annotation in extra_annotations:
+            _require_mapping(annotation, "annotation")
+            line_ref = annotation.get("line_ref")
+            value = annotation.get("value")
+            if type(line_ref) is not str or not line_ref or type(value) is not str or not value:
+                raise ValueError("invalid annotation")
+            annotations.append({"order_id": order_id, "line_ref": line_ref, "value": value})
         rule = entry.get("pricing_rule")
         if rule is not None:
             if type(rule) is not str or not rule:
@@ -140,6 +170,7 @@ def build_invoice_draft(source_provenance, orders, selected_order_ids, decisions
         "source_provenance": {key: provenance[key] for key in sorted(provenance) if type(provenance[key]) in (str, int, float, bool, type(None))},
         "selected_order_ids": list(selected_order_ids),
         "lines": lines,
+        "annotations": annotations,
         "decisions": frozen_decisions,
     }
     return {

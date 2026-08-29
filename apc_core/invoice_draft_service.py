@@ -18,7 +18,7 @@ _REQUIRED_PROPOSAL_KEYS = frozenset(
         "idempotency_material",
     }
 )
-_LINE_KEYS = frozenset({"order_id", "line_ref", "item_id", "quantity", "unit_price", "source_annotation"})
+_LINE_KEYS = frozenset({"order_id", "line_ref", "item_id", "quantity", "unit_price", "source_annotation", "source_unit_price", "current_price"})
 _DECISION_KEYS = (
     frozenset({"conflict_id", "chosen_existing_value", "chosen_existing_source"}),
     frozenset({"conflict_id", "manual_value", "rationale"}),
@@ -56,7 +56,17 @@ class InvoiceDraftService:
         for line in value:
             if type(line) is not dict or not {"order_id", "line_ref", "item_id", "quantity"}.issubset(line) or not set(line).issubset(_LINE_KEYS):
                 raise ValueError("invalid line")
-            frozen = {key: cls._text(line[key], "line") for key in line}
+            frozen = {key: cls._text(line[key], "line") for key in line if key != "current_price"}
+            if "current_price" in line:
+                current_price = line["current_price"]
+                if (
+                    type(current_price) is not dict
+                    or set(current_price) != {"status", "value"}
+                    or type(current_price["status"]) is not str
+                    or type(current_price["value"]) is not str
+                ):
+                    raise ValueError("invalid line")
+                frozen["current_price"] = dict(current_price)
             if frozen["order_id"] not in selected:
                 raise ValueError("invalid line")
             allocation = (frozen["order_id"], frozen["line_ref"])
@@ -89,13 +99,13 @@ class InvoiceDraftService:
     def _annotations(cls, value: object, lines: tuple[dict[str, str], ...]) -> tuple[dict[str, str], ...]:
         if type(value) is not tuple:
             raise ValueError("invalid annotations")
-        permitted = {(line["order_id"], line["line_ref"]) for line in lines if "source_annotation" in line}
+        permitted_orders = {line["order_id"] for line in lines}
         annotations: list[dict[str, str]] = []
         for annotation in value:
             if type(annotation) is not dict or frozenset(annotation) != {"order_id", "line_ref", "value"}:
                 raise ValueError("invalid annotations")
             clean = {key: cls._text(item, "annotation") for key, item in annotation.items()}
-            if (clean["order_id"], clean["line_ref"]) not in permitted:
+            if clean["order_id"] not in permitted_orders:
                 raise ValueError("invalid annotations")
             annotations.append(clean)
         return tuple(annotations)

@@ -62,6 +62,17 @@ class TestCustomerPriceModuleContract(unittest.TestCase):
                 {(entry["customer_code"], entry["item_id"], entry["reason"]) for entry in prices.quarantine()},
             )
 
+    def test_invoice_current_price_is_customer_scoped_and_returns_explicit_unknown(self):
+        from apc_core.customer_price_module import CustomerPriceModule
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prices = CustomerPriceModule(self.make_snapshot(root), data_dir=root / "state")
+            prices.import_from_snapshot()
+            self.assertEqual({"status": "KNOWN", "value": "12.50"}, prices.invoice_current_price("C-001", "IT-001"))
+            self.assertEqual({"status": "UNKNOWN", "value": ""}, prices.invoice_current_price("C-002", "IT-001"))
+            self.assertEqual({"status": "UNKNOWN", "value": ""}, prices.invoice_current_price("C-001", "IT-404"))
+
     def test_later_snapshot_retires_missing_price_rows_so_they_are_not_searchable_or_editable(self):
         from apc_core.customer_price_module import CustomerPriceModule
 

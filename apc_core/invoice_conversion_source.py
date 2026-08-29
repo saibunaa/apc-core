@@ -47,12 +47,27 @@ class InvoiceConversionSource:
         finally:
             os.close(descriptor)
 
+    @classmethod
+    def from_open_descriptor(cls, descriptor: int, artifact_path: Path, *, current_price_lookup=None):
+        """Construct from a duplicate of an already validated, open artifact FD."""
+        if type(descriptor) is not int:
+            raise ReadOnlyInvoiceSourceError("invalid accepted artifact descriptor")
+        instance = cls.__new__(cls)
+        instance.source_path = Path(artifact_path)
+        instance._price_lookup = current_price_lookup
+        duplicate = os.dup(descriptor)
+        try:
+            instance._initialize(duplicate)
+        finally:
+            os.close(duplicate)
+        return instance
+
     def _initialize(self, descriptor: int) -> None:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise ReadOnlyInvoiceSourceError("invoice source must be a regular SQLite file")
         self._lock = threading.RLock()
         self._connection = sqlite3.connect(
-            f"file:/proc/self/fd/{descriptor}?mode=ro&immutable=1",
+            f"file:/proc/self/fd/{descriptor}?mode=ro",
             uri=True,
             check_same_thread=False,
         )
@@ -115,11 +130,11 @@ class InvoiceConversionSource:
             return {"status": "UNANIMOUS", "values": distinct}
         return {"status": "CONFLICTING", "values": distinct}
 
-    def _current_price(self, item_id: str) -> dict[str, str]:
-        if not item_id or self._price_lookup is None:
+    def _current_price(self, customer_id: str, item_id: str) -> dict[str, str]:
+        if not customer_id or not item_id or self._price_lookup is None:
             return {"status": "UNKNOWN", "value": ""}
         try:
-            result = self._price_lookup(item_id)
+            result = self._price_lookup(customer_id, item_id)
         except Exception:
             return {"status": "UNKNOWN", "value": ""}
         if not isinstance(result, dict):
@@ -174,7 +189,7 @@ class InvoiceConversionSource:
                     "source_unit_price": _text(row[4]),
                     "is_annotation": not item_id and bool(note),
                     "annotation_text": note if not item_id else "",
-                    "current_price": self._current_price(item_id),
+                    "current_price": self._current_price(_text(header[2]), item_id),
                 }
             )
             shipment_dates.append(_text(row[6]))

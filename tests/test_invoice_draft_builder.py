@@ -64,13 +64,13 @@ class InvoiceDraftBuilderTests(unittest.TestCase):
 
     def test_multi_order_preview_preserves_supplied_order_and_line_order(self):
         orders = [
-            order("ORD-B", lines=[{"line_ref": "B:2", "item_id": "B2", "quantity": "1"}, {"line_ref": "B:1", "item_id": "B1", "quantity": "3"}]),
-            order("ORD-A", lines=[{"line_ref": "A:1", "item_id": "A1", "quantity": "4"}]),
+            order("ORD-B", lines=[{"line_ref": "1", "item_id": "B2", "quantity": "1"}, {"line_ref": "2", "item_id": "B1", "quantity": "3"}]),
+            order("ORD-A", lines=[{"line_ref": "1", "item_id": "A1", "quantity": "4"}]),
         ]
         preview = build(source_provenance(), orders, ["ORD-A", "ORD-B"], [])
 
         self.assertEqual(preview["selected_order_ids"], ("ORD-A", "ORD-B"))
-        self.assertEqual([(line["order_id"], line["line_ref"]) for line in preview["lines"]], [("ORD-B", "B:2"), ("ORD-B", "B:1"), ("ORD-A", "A:1")])
+        self.assertEqual([(line["order_id"], line["line_ref"]) for line in preview["lines"]], [("ORD-B", "1"), ("ORD-B", "2"), ("ORD-A", "1")])
 
     def test_source_provenance_requires_64_character_ascii_hex_snapshot_digest(self):
         for snapshot_digest in ("g" * 64, "a" * 63, "a" * 65):
@@ -100,7 +100,7 @@ class InvoiceDraftBuilderTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "document-family"):
             build(source_provenance(), [order("ORD-1"), order("ORD-2", family="proforma")], ["ORD-1", "ORD-2"], [])
         with self.assertRaisesRegex(ValueError, "duplicate selected line ref"):
-            build(source_provenance(), [order("ORD-1", lines=[{"line_ref": "same", "item_id": "A", "quantity": "1"}]), order("ORD-2", lines=[{"line_ref": "same", "item_id": "B", "quantity": "1"}])], ["ORD-1", "ORD-2"], [])
+            build(source_provenance(), [order("ORD-1", lines=[{"line_ref": "same", "item_id": "A", "quantity": "1"}, {"line_ref": "same", "item_id": "B", "quantity": "1"}])], ["ORD-1"], [])
 
     def test_required_conflicts_need_explicit_complete_decisions_and_manual_rationale(self):
         conflicted = order("ORD-1", shipment_conflicts=[{"conflict_id": "ship-to", "required": True, "existing_values": [{"value": "BKK", "source": "ORD-1"}]}])
@@ -114,6 +114,15 @@ class InvoiceDraftBuilderTests(unittest.TestCase):
         resolved = build(source_provenance(), [conflicted], ["ORD-1"], [{"conflict_id": "ship-to", "chosen_existing_value": "BKK", "chosen_existing_source": "ORD-1"}])
         self.assertTrue(resolved["ready_to_save"])
         self.assertEqual(resolved["decisions"], ({"conflict_id": "ship-to", "chosen_existing_value": "BKK", "chosen_existing_source": "ORD-1"},))
+
+    def test_unknown_price_evidence_is_explicitly_unresolved_not_silently_priced(self):
+        proposal = build(
+            {"accepted_snapshot_sha256": "a" * 64},
+            [{"order_id": "O-1", "customer_id": "C-1", "document_family": "legacy-order", "lines": [{"line_ref": "1", "item_id": "I-1", "quantity": "1", "source_unit_price": "", "current_price": {"status": "UNKNOWN", "value": ""}}], "shipment_conflicts": []}],
+            ["O-1"], [],
+        )
+        self.assertFalse(proposal["ready_to_save"])
+        self.assertIn("source/current price unresolved", {entry["reason"] for entry in proposal["unresolved"]})
 
     def test_unsupported_pricing_is_unresolved_without_inventing_financial_values(self):
         preview = build(source_provenance(), [order("ORD-1", pricing_rule="tiered-discount")], ["ORD-1"], [])

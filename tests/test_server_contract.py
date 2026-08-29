@@ -101,6 +101,22 @@ class ServerContractTests(unittest.TestCase):
             price_factory.assert_called_once_with(descriptor, accepted, data_dir=None)
             order_factory.assert_called_once_with(descriptor, accepted)
 
+    def test_invoice_runtime_constructs_source_from_validated_open_descriptor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); accepted = root / "accepted.sqlite"; accepted.write_bytes(b"accepted")
+            descriptor = os.open(accepted, os.O_RDONLY | os.O_NOFOLLOW)
+            manifest = {"accepted_artifact_sha256": "a" * 64, "capabilities": {}}
+            items, source, service = Mock(), Mock(), Mock()
+            source.source_sha256 = "a" * 64
+            from apc_core import server
+            with patch.object(server, "_read_accepted_manifest", return_value=(descriptor, accepted, manifest)), \
+                 patch.object(server.ItemExplorer, "from_open_descriptor", return_value=items), \
+                 patch.object(server.InvoiceConversionSource, "from_open_descriptor", return_value=source) as source_factory, \
+                 patch.object(server, "InvoiceDraftService", return_value=service):
+                result = server.load_accepted_customer_price_order_runtime(root / "ignored", data_dir=root / "state", with_invoice_drafts=True)
+            self.assertIs(source, result[5])
+            source_factory.assert_called_once_with(descriptor, accepted, current_price_lookup=None)
+
     def test_customer_price_order_runtime_does_not_construct_awb_explorer_when_manifest_declares_awb_unavailable(self):
         """A valid source AWB table cannot override an unavailable accepted capability."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -306,7 +322,7 @@ class ServerContractTests(unittest.TestCase):
         customers = Mock()
         prices = Mock()
         orders = Mock()
-        manifest = {"accepted": True}
+        manifest = {"accepted": True, "accepted_artifact_sha256": "a" * 64}
         handler = object()
         created_servers = []
 
@@ -320,14 +336,15 @@ class ServerContractTests(unittest.TestCase):
                 return None
 
         with patch.object(sys, "argv", ["server", "--manifest", "accepted.json"]), \
-             patch.object(server, "load_accepted_customer_price_order_runtime", return_value=(items, customers, prices, orders, None, manifest)) as loader, \
+             patch.object(server, "load_accepted_customer_price_order_runtime", return_value=(items, customers, prices, orders, None, None, None, manifest)) as loader, \
              patch.object(server, "make_handler", return_value=handler) as handler_factory, \
              patch.object(server, "ThreadingHTTPServer", FakeServer):
             server.main()
 
-        loader.assert_called_once_with(Path("accepted.json"), data_dir=None)
+        loader.assert_called_once_with(Path("accepted.json"), data_dir=None, with_invoice_drafts=True)
         handler_factory.assert_called_once_with(
             items, manifest, customers, prices, orders, None,
+            invoice_source=None, invoice_draft_service=None, accepted_snapshot_sha256=manifest["accepted_artifact_sha256"],
             customer_lan_ingress=False, allowed_mutation_origins=None,
             recovery_authorizer=None, recovery_service=None, recovery_maintenance=None,
         )
@@ -537,7 +554,27 @@ class ServerContractTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     server.main()
 
-    def test_container_ingress_requires_explicit_approved_mutation_origin(self):
+    def test_invoice_draft_dependencies_are_optional_and_use_only_the_validated_accepted_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            accepted = root / "accepted.sqlite"
+            accepted.write_bytes(b"accepted artifact")
+            descriptor = os.open(accepted, os.O_RDONLY | os.O_NOFOLLOW)
+            manifest = {"accepted_artifact_sha256": "accepted-hash"}
+            items, source, service = Mock(), Mock(), Mock()
+            source.source_sha256 = "accepted-hash"
+            from apc_core import server
+            with patch.object(server, "_read_accepted_manifest", return_value=(descriptor, accepted, manifest)), \
+                 patch.object(server.ItemExplorer, "from_open_descriptor", return_value=items) as item_factory, \
+                 patch.object(server.InvoiceConversionSource, "from_open_descriptor", return_value=source) as source_factory, \
+                 patch.object(server, "InvoiceDraftStore", return_value=Mock()) as store_factory, \
+                 patch.object(server, "InvoiceDraftService", return_value=service):
+                result = server.load_accepted_customer_price_order_runtime(root / "ignored.json", data_dir=root / "state", with_invoice_drafts=True)
+            self.assertEqual((items, None, None, None, None, source, service, manifest), result)
+            item_factory.assert_called_once_with(descriptor, accepted, data_dir=root / "state")
+            source_factory.assert_called_once_with(descriptor, accepted, current_price_lookup=None)
+            store_factory.assert_called_once_with(root / "state")
+
         from apc_core import server
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(RuntimeContractError):
