@@ -49,8 +49,9 @@ class SnapshotContractTests(unittest.TestCase):
                 {
                     "items": {"required": True, "ready": True, "status": "verified"},
                     "customers": {"ready": False, "status": "unavailable"},
+                    "customer_prices": {"ready": False, "status": "unavailable"},
                     "usa_name_direct_source": {"available": False},
-                    "change_name_table": {"available": False},
+                    "change_name_table": {"available": False, "ready": False, "status": "unavailable"},
                     "awb_shipments": {"ready": False, "status": "unavailable"},
                     "orders": {"ready": False, "status": "unavailable"},
                 },
@@ -136,8 +137,9 @@ class SnapshotContractTests(unittest.TestCase):
                 {
                     "items": {"required": True, "ready": True, "status": "verified"},
                     "customers": {"ready": True, "status": "verified"},
+                    "customer_prices": {"ready": False, "status": "unavailable"},
                     "usa_name_direct_source": {"available": True},
-                    "change_name_table": {"available": True},
+                    "change_name_table": {"available": False, "ready": False, "status": "unavailable"},
                     "awb_shipments": {"ready": True, "status": "verified"},
                     "orders": {"ready": True, "status": "verified"},
                 },
@@ -145,6 +147,53 @@ class SnapshotContractTests(unittest.TestCase):
             )
             self.assertNotIn("customer_ready", manifest)
             self.assertEqual(manifest, json.loads(output.read_text(encoding="utf-8")))
+
+    def test_customer_price_inventory_is_unavailable_without_price_table_or_required_price_field(self):
+        for price_columns in (None, ("Cust ID", "Item ID")):
+            with self.subTest(price_columns=price_columns), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                source = self.make_snapshot(root)
+                connection = sqlite3.connect(source)
+                connection.execute('CREATE TABLE "MainDB__CUST" ("Cust ID" TEXT)')
+                if price_columns is not None:
+                    definition = ", ".join(f'"{column}" TEXT' for column in price_columns)
+                    connection.execute(f'CREATE TABLE "MainDB__CUST_PRC" ({definition})')
+                connection.commit()
+                connection.close()
+
+                manifest = certify_snapshot(source, root / "state" / "accepted_snapshot.json", generated_at="2026-08-29T13:00:00Z")
+
+                self.assertTrue(manifest["accepted"])
+                self.assertEqual(
+                    {"ready": False, "status": "unavailable"},
+                    manifest["capabilities"]["customer_prices"],
+                )
+
+    def test_complete_customer_price_and_change_name_schemas_are_verified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_snapshot(root)
+            connection = sqlite3.connect(source)
+            connection.execute('CREATE TABLE "MainDB__CUST" ("Cust ID" TEXT)')
+            connection.execute('CREATE TABLE "MainDB__CUST_PRC" ("Cust ID" TEXT, "Item ID" TEXT, "Price" TEXT)')
+            connection.execute(
+                'CREATE TABLE "TempDB__ChangeName" '
+                '("Cust ID" TEXT, "Item ID" TEXT, "Declaration Name" TEXT)'
+            )
+            connection.commit()
+            connection.close()
+
+            manifest = certify_snapshot(source, root / "state" / "accepted_snapshot.json", generated_at="2026-08-29T13:00:00Z")
+
+            self.assertTrue(manifest["accepted"])
+            self.assertEqual(
+                {"ready": True, "status": "verified"},
+                manifest["capabilities"]["customer_prices"],
+            )
+            self.assertEqual(
+                {"available": True, "ready": True, "status": "verified"},
+                manifest["capabilities"]["change_name_table"],
+            )
 
     def test_awb_readiness_accepts_every_configured_identity_alias(self):
         aliases = (

@@ -23,6 +23,12 @@ AWB_IDENTITY_COLUMNS = (
     ("AWB Date", "AWBDate", "Date"),
 )
 CHANGE_NAME_TABLE = "TempDB__ChangeName"
+CHANGE_NAME_REQUIRED_COLUMNS = {"Cust ID", "Item ID", "Declaration Name"}
+CUSTOMER_PRICE_REQUIRED_COLUMNS = {
+    "MainDB__CUST_PRC": {"Cust ID", "Item ID", "Price"},
+    "MainDB__CUST": {"Cust ID"},
+    "MainDB__ITEM": {"Item ID"},
+}
 # Keep this closed duplicate in the manifest contract rather than importing the
 # runtime explorer: certification must inventory only schema and avoid runtime
 # dependencies/circular coupling.  It intentionally mirrors OrderExplorer.
@@ -70,8 +76,9 @@ def _unavailable_capabilities() -> dict:
     return {
         "items": {"required": True, "ready": True, "status": "verified"},
         "customers": {"ready": False, "status": "unavailable"},
+        "customer_prices": {"ready": False, "status": "unavailable"},
         "usa_name_direct_source": {"available": False},
-        "change_name_table": {"available": False},
+        "change_name_table": {"available": False, "ready": False, "status": "unavailable"},
         "awb_shipments": {"ready": False, "status": "unavailable"},
         "orders": {"ready": False, "status": "unavailable"},
     }
@@ -91,14 +98,26 @@ def _snapshot_capabilities(path: Path) -> dict:
 
             item_columns = columns(ITEM_TABLE)
             customer_ready = REQUIRED_CUSTOMER_COLUMNS.issubset(columns(CUSTOMER_TABLE))
+            customer_prices_ready = all(
+                required.issubset(columns(table)) for table, required in CUSTOMER_PRICE_REQUIRED_COLUMNS.items()
+            )
+            change_name_ready = CHANGE_NAME_REQUIRED_COLUMNS.issubset(columns(CHANGE_NAME_TABLE))
             awb_columns = columns(AWB_TABLE)
             awb_ready = AWB_TABLE in tables and all(any(alias in awb_columns for alias in aliases) for aliases in AWB_IDENTITY_COLUMNS)
             orders_ready = all(set(required).issubset(columns(table)) for table, required in ORDER_REQUIRED_COLUMNS.items())
             capabilities.update(
                 {
                     "customers": {"ready": customer_ready, "status": _capability_status(customer_ready)},
+                    "customer_prices": {
+                        "ready": customer_prices_ready,
+                        "status": _capability_status(customer_prices_ready),
+                    },
                     "usa_name_direct_source": {"available": "USA Name" in item_columns},
-                    "change_name_table": {"available": CHANGE_NAME_TABLE in tables},
+                    "change_name_table": {
+                        "available": change_name_ready,
+                        "ready": change_name_ready,
+                        "status": _capability_status(change_name_ready),
+                    },
                     "awb_shipments": {"ready": awb_ready, "status": _capability_status(awb_ready)},
                     "orders": {"ready": orders_ready, "status": _capability_status(orders_ready)},
                 }
