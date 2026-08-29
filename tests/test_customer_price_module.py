@@ -146,6 +146,16 @@ class TestCustomerPriceModuleContract(unittest.TestCase):
             self.assertIn(marker, html)
         self.assertNotIn('class="paste', html)
 
+    def test_customer_price_html_shell_workspace_supports_horizontal_scroll_with_vertical_clipping(self):
+        from apc_core.customer_price_module import CustomerPriceModule
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prices = CustomerPriceModule(self.make_snapshot(Path(tmp)), data_dir=Path(tmp) / "state")
+            html = prices.html()
+
+        workspace_css = html.split(".workspace{", 1)[1].split("}", 1)[0]
+        self.assertIn("overflow-x:auto;overflow-y:hidden", workspace_css)
+
     def test_customer_price_safety_shell_keeps_errors_in_modal_hides_provenance_and_supports_focus_safe_load_more(self):
         from apc_core.customer_price_module import CustomerPriceModule
 
