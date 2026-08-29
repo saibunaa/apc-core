@@ -870,6 +870,19 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
     )
     invoice_previews = InvoiceDraftPreviewRegistry() if invoice_available else None
     invoice_page = invoice_html if type(invoice_html) is str else invoice_draft_html()
+
+    def _invoice_public_proposal(proposal):
+        """Keep AWB resolution values server-held while exposing a draft review shape."""
+        result = dict(proposal)
+        decisions = []
+        for decision in proposal["decisions"]:
+            if decision["conflict_id"].endswith(":awb"):
+                decisions.append({"conflict_id": decision["conflict_id"]})
+            else:
+                decisions.append(dict(decision))
+        result["decisions"] = tuple(decisions)
+        return result
+
     def _canonical_program_path(path: str) -> str:
         """Accept the canonical /program/ mount while keeping proxy-stripped routes compatible."""
         return path.removeprefix("/program") if path.startswith("/program/") else path
@@ -1195,7 +1208,7 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                                     )
                         proposal = build_invoice_draft({"accepted_snapshot_sha256": accepted_snapshot_sha256}, orders, selected, decisions)
                         preview_ref = invoice_previews.issue(proposal, accepted_snapshot_sha256)
-                        self._send_json(HTTPStatus.OK, {"preview_ref": preview_ref, "proposal": proposal})
+                        self._send_json(HTTPStatus.OK, {"preview_ref": preview_ref, "proposal": _invoice_public_proposal(proposal)})
                     else:
                         if set(payload) != {"preview_ref", "actor"}:
                             raise ValueError
