@@ -135,12 +135,42 @@ class TestOrderExplorerContract(unittest.TestCase):
             self.assertEqual(["2", "3", "10"], [line["line_no"] for line in order["lines"]])
             self.assertEqual(["IT/DUP", "IT/TH", "IT/DUP"], [line["item_id"] for line in order["lines"]])
             self.assertEqual("", order["lines"][2]["qty"])
-            self.assertEqual("สินค้าซ้ำ", order["lines"][0]["item_description_th"])
-            self.assertEqual({"line_no", "item_id", "item_description", "item_description_th", "qty"}, set(order["lines"][0]))
+            self.assertEqual("สินค้าซ้ำ", order["lines"][0]["description_th"])
+            self.assertEqual(
+                {"line_no", "item_id", "qty", "description_th", "reference", "description_en", "is_annotation"},
+                set(order["lines"][0]),
+            )
             self.assertIsNone(explorer.open_order("ORD/2026/001/"))
             self.assertIsNone(explorer.open_order("ORD/2026/00"))
             self.assertIsNone(explorer.open_order("ORD/2026/001-X/extra"))
             self.assertIsNone(explorer.open_order(42))
+            explorer.close()
+
+    def test_open_order_prefers_per_order_text_and_preserves_annotation_rows_when_export_kept_legacy_columns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self.make_snapshot(Path(tmp))
+            connection = sqlite3.connect(source)
+            for column in ('Description', 'Description TH', 'Description2', 'Note', 'Inv No', 'SubCust'):
+                connection.execute(f'ALTER TABLE "MainDB__ORDER_ITEM" ADD COLUMN "{column}" TEXT')
+            connection.execute(
+                'UPDATE "MainDB__ORDER_ITEM" SET "Description TH" = ?, "Description2" = ?, "Inv No" = ? WHERE "Order No" = ? AND "Line No" = ?',
+                ('ชื่อเฉพาะออเดอร์', 'Order-specific English [X]', 'A5', 'ORD/2026/001', '2'),
+            )
+            connection.execute(
+                'UPDATE "MainDB__ORDER_ITEM" SET "Item ID" = ?, "Note" = ? WHERE "Order No" = ? AND "Line No" = ?',
+                ('', 'OUT OF STOCK', 'ORD/2026/001', '10'),
+            )
+            connection.commit(); connection.close()
+            explorer = self.explorer_class()(source)
+            lines = explorer.open_order('ORD/2026/001')['lines']
+            self.assertEqual('ชื่อเฉพาะออเดอร์', lines[0]['description_th'])
+            self.assertEqual('Order-specific English [X]', lines[0]['description_en'])
+            self.assertEqual('A5', lines[0]['reference'])
+            self.assertFalse(lines[0]['is_annotation'])
+            self.assertEqual('', lines[2]['item_id'])
+            self.assertEqual('', lines[2]['qty'])
+            self.assertEqual('OUT OF STOCK', lines[2]['description_th'])
+            self.assertTrue(lines[2]['is_annotation'])
             explorer.close()
 
     def test_customer_template_returns_separated_allowlisted_customer_configuration_candidates_and_notes(self):

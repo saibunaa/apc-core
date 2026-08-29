@@ -357,9 +357,10 @@ class ProgramShellTests(unittest.TestCase):
         html = module._order_explorer_html()
         for marker in (
             'id="frmOrderForm"', 'id="open-order-forms"', 'id="frmOrderFormList"', 'role="dialog"',
-            'Date', 'Cust', 'Country', 'AWB', 'Order No.', 'B/I/M/P/W/U/T', 'function loadOrder(',
-            "event.key==='Escape'", 'openButton.focus()', "credentials:'same-origin'", "cache:'no-store'",
-            'id="customer-code-options"', 'function commitCustomerCode(', 'textContent=', 'preview-only',
+            'Description Thai', '##', 'Description Eng', 'B/L/M/P/W/U/T', 'Open selected',
+            'Shipment & packing — not yet mapped', 'Order note (this order)', 'guarded',
+            'function loadOrder(', "e.key==='Escape'", 'openButton.focus()', "credentials:'same-origin'", "cache:'no-store'",
+            'id="customer-code-options"', 'function commitCustomerCode(', 'textContent=', 'annotation',
         ):
             self.assertIn(marker, html)
         self.assertIn('href="orders/"', _menu_html_body())
@@ -369,11 +370,13 @@ class ProgramShellTests(unittest.TestCase):
         self.assertNotIn("innerHTML", html)
         self.assertNotIn("fetch('/", html)
         self.assertNotRegex(html, r"fetch\([^)]*method\s*:")
+        self.assertNotIn('data-preview=', html)
+        self.assertNotIn('B/I/M/P/W/U/T', html)
 
     def test_order_forms_customer_template_ui_hydrates_the_typed_code_not_only_loaded_orders(self):
         import apc_core.item_explorer as module
         html = module._order_explorer_html()
-        self.assertIn("templateFor(typed)", html)
+        self.assertIn("templateFor(code)", html)
         self.assertIn("$('#customer-code').value=data.customer_id", html)
 
 
