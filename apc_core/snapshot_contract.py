@@ -16,6 +16,25 @@ ITEM_TABLE = "MainDB__ITEM"
 REQUIRED_ITEM_COLUMNS = {"Item ID", "Description", "Description TH", "Type", "Family"}
 CUSTOMER_TABLE = "MainDB__CUST"
 REQUIRED_CUSTOMER_COLUMNS = {"Cust ID", "Name"}
+AWB_TABLE = "MainDB__AWB"
+AWB_IDENTITY_COLUMNS = (
+    ("Inv No", "INVOICE.Inv No", "Invoice No", "InvNo"),
+    ("AWB", "AWB No", "AWBNo"),
+    ("AWB Date", "AWBDate", "Date"),
+)
+CHANGE_NAME_TABLE = "TempDB__ChangeName"
+# Keep this closed duplicate in the manifest contract rather than importing the
+# runtime explorer: certification must inventory only schema and avoid runtime
+# dependencies/circular coupling.  It intentionally mirrors OrderExplorer.
+ORDER_REQUIRED_COLUMNS = {
+    "MainDB__ORDER": ("Order No", "Order Date", "Cust ID"),
+    "MainDB__ORDER_ITEM": ("Order No", "Line No", "Item ID", "Qty"),
+    "MainDB__CUST": ("Cust ID", "Name", "Inv Type"),
+    "MainDB__CUST_CON": ("Cust ID", "Com Code"),
+    "MainDB__CUST_CONSIGNEE": ("Cust ID", "Consignee"),
+    "MainDB__CUST_NOTE": ("Cust ID", "Order", "Invoice"),
+    "MainDB__ITEM": ("Item ID", "Description", "Description TH"),
+}
 SCOPE = "read_only_item_explorer"
 
 
@@ -41,6 +60,52 @@ def _readonly_uri(path: Path) -> str:
 
 def _open_readonly(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(_readonly_uri(path), uri=True)
+
+
+def _capability_status(ready: bool) -> str:
+    return "verified" if ready else "unavailable"
+
+
+def _unavailable_capabilities() -> dict:
+    return {
+        "items": {"required": True, "ready": True, "status": "verified"},
+        "customers": {"ready": False, "status": "unavailable"},
+        "usa_name_direct_source": {"available": False},
+        "change_name_table": {"available": False},
+        "awb_shipments": {"ready": False, "status": "unavailable"},
+        "orders": {"ready": False, "status": "unavailable"},
+    }
+
+
+def _snapshot_capabilities(path: Path) -> dict:
+    """Return a best-effort, schema-only inventory without changing acceptance."""
+    capabilities = _unavailable_capabilities()
+    try:
+        with _open_readonly(path) as connection:
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+
+            def columns(table: str) -> set[str]:
+                if table not in tables:
+                    return set()
+                return {row[1] for row in connection.execute(f'PRAGMA table_info("{table}")')}
+
+            item_columns = columns(ITEM_TABLE)
+            customer_ready = REQUIRED_CUSTOMER_COLUMNS.issubset(columns(CUSTOMER_TABLE))
+            awb_columns = columns(AWB_TABLE)
+            awb_ready = AWB_TABLE in tables and all(any(alias in awb_columns for alias in aliases) for aliases in AWB_IDENTITY_COLUMNS)
+            orders_ready = all(set(required).issubset(columns(table)) for table, required in ORDER_REQUIRED_COLUMNS.items())
+            capabilities.update(
+                {
+                    "customers": {"ready": customer_ready, "status": _capability_status(customer_ready)},
+                    "usa_name_direct_source": {"available": "USA Name" in item_columns},
+                    "change_name_table": {"available": CHANGE_NAME_TABLE in tables},
+                    "awb_shipments": {"ready": awb_ready, "status": _capability_status(awb_ready)},
+                    "orders": {"ready": orders_ready, "status": _capability_status(orders_ready)},
+                }
+            )
+    except sqlite3.Error:
+        pass
+    return capabilities
 
 
 def _validate_snapshot(path: Path, *, customer_ready: bool = False) -> int:
@@ -123,6 +188,7 @@ def certify_snapshot_descriptor(source_descriptor: int, source_path: Path, outpu
     temporary_artifact = _copy_descriptor_to_temporary(source_descriptor, state_directory)
     try:
         item_count = _validate_snapshot(temporary_artifact, customer_ready=customer_ready)
+        capabilities = _snapshot_capabilities(temporary_artifact)
         accepted_hash = _sha256(temporary_artifact)
         accepted_path = state_directory / f"accepted_snapshot-{accepted_hash}.sqlite"
         temporary_artifact.chmod(0o444)
@@ -151,6 +217,7 @@ def certify_snapshot_descriptor(source_descriptor: int, source_path: Path, outpu
         "sqlite_integrity": "ok",
         "item_count": item_count,
         "required_item_columns": sorted(REQUIRED_ITEM_COLUMNS),
+        "capabilities": capabilities,
     }
     if customer_ready:
         manifest["customer_ready"] = True
