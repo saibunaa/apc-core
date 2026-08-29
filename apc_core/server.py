@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .item_explorer import ItemExplorer, make_handler
 from .order_explorer import OrderExplorer
+from .awb_explorer import AWBExplorer, ReadOnlySourceContractError as AWBSourceContractError
 from .recovery import RecoveryAuthorizer, RecoveryService
 from .customer_explorer import CustomerExplorer
 from .customer_price_module import CustomerPriceModule
@@ -145,7 +146,7 @@ def load_accepted_customer_price_runtime(manifest_path: Path, *, data_dir: Path 
         os.close(descriptor)
 
 
-def load_accepted_customer_price_order_runtime(manifest_path: Path, *, data_dir: Path | None = None) -> tuple[ItemExplorer, CustomerExplorer, CustomerPriceModule, OrderExplorer, dict]:
+def load_accepted_customer_price_order_runtime(manifest_path: Path, *, data_dir: Path | None = None) -> tuple[ItemExplorer, CustomerExplorer, CustomerPriceModule, OrderExplorer, AWBExplorer | None, dict]:
     """Build all Order Forms dependencies from the one verified accepted descriptor."""
     descriptor, artifact_path, manifest = _read_accepted_manifest(manifest_path)
     item_explorer = customer_explorer = price_module = order_explorer = None
@@ -163,7 +164,14 @@ def load_accepted_customer_price_order_runtime(manifest_path: Path, *, data_dir:
         if price_module.reconciliation_status()["state"] != "ready":
             price_module.import_from_snapshot()
         order_explorer = OrderExplorer.from_open_descriptor(descriptor, artifact_path)
-        return item_explorer, customer_explorer, price_module, order_explorer, manifest
+        # Shipments are optional: a snapshot exported before the AWB tables were
+        # included must still serve every other module. The menu card stays
+        # "Coming soon" and no /shipments/ route is registered.
+        try:
+            awb_explorer = AWBExplorer.from_open_descriptor(descriptor, artifact_path)
+        except (AWBSourceContractError, OSError, sqlite3.Error):
+            awb_explorer = None
+        return item_explorer, customer_explorer, price_module, order_explorer, awb_explorer, manifest
     except RuntimeContractError:
         raise
     except (OSError, ValueError, sqlite3.Error) as error:
@@ -219,9 +227,11 @@ def main() -> None:
     except RuntimeContractError as error:
         parser.error(str(error))
     recovery_authorizer, recovery_service = recovery_test_mode(data_dir=data_dir or Path("."))
-    item_explorer, customer_explorer, customer_price_module, order_explorer, manifest = load_accepted_customer_price_order_runtime(args.manifest, data_dir=data_dir)
+    item_explorer, customer_explorer, customer_price_module, order_explorer, awb_explorer, manifest = load_accepted_customer_price_order_runtime(args.manifest, data_dir=data_dir)
     def close_core_modules_for_recovery() -> None:
         """Maintenance boundary: no Core SQLite connection survives a generation switch."""
+        if awb_explorer is not None:
+            awb_explorer.close()
         order_explorer.close()
         customer_price_module.close()
         customer_explorer.close()
@@ -229,7 +239,7 @@ def main() -> None:
 
     try:
         server = ThreadingHTTPServer((args.host, args.port), make_handler(
-            item_explorer, manifest, customer_explorer, customer_price_module, order_explorer,
+            item_explorer, manifest, customer_explorer, customer_price_module, order_explorer, awb_explorer,
             customer_lan_ingress=args.container_ingress,
             allowed_mutation_origins=mutation_origins,
             recovery_authorizer=recovery_authorizer, recovery_service=recovery_service,

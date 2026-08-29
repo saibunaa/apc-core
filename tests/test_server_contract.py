@@ -93,7 +93,7 @@ class ServerContractTests(unittest.TestCase):
                  patch.object(server, "CustomerExplorer", return_value=customers), \
                  patch.object(server.CustomerPriceModule, "from_open_descriptor", return_value=prices) as price_factory, \
                  patch.object(server.OrderExplorer, "from_open_descriptor", return_value=orders) as order_factory:
-                loaded_items, loaded_customers, loaded_prices, loaded_orders, loaded_manifest = server.load_accepted_customer_price_order_runtime(root / "substituted.sqlite")
+                loaded_items, loaded_customers, loaded_prices, loaded_orders, loaded_awb, loaded_manifest = server.load_accepted_customer_price_order_runtime(root / "substituted.sqlite")
 
             self.assertEqual((items, customers, prices, orders, manifest), (loaded_items, loaded_customers, loaded_prices, loaded_orders, loaded_manifest))
             item_factory.assert_called_once_with(descriptor, accepted, data_dir=None)
@@ -122,14 +122,14 @@ class ServerContractTests(unittest.TestCase):
                 return None
 
         with patch.object(sys, "argv", ["server", "--manifest", "accepted.json"]), \
-             patch.object(server, "load_accepted_customer_price_order_runtime", return_value=(items, customers, prices, orders, manifest)) as loader, \
+             patch.object(server, "load_accepted_customer_price_order_runtime", return_value=(items, customers, prices, orders, None, manifest)) as loader, \
              patch.object(server, "make_handler", return_value=handler) as handler_factory, \
              patch.object(server, "ThreadingHTTPServer", FakeServer):
             server.main()
 
         loader.assert_called_once_with(Path("accepted.json"), data_dir=None)
         handler_factory.assert_called_once_with(
-            items, manifest, customers, prices, orders,
+            items, manifest, customers, prices, orders, None,
             customer_lan_ingress=False, allowed_mutation_origins=None,
             recovery_authorizer=None, recovery_service=None, recovery_maintenance=None,
         )
