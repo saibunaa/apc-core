@@ -13,6 +13,8 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from apc_core.awb_explorer import html as awb_explorer_html
+
 
 _PRIVATE_LAN_NETWORKS = (
     ipaddress.ip_network("10.0.0.0/8"),
@@ -92,6 +94,11 @@ def _number_text(value: object) -> str:
         return format(Decimal(text), "f").rstrip("0").rstrip(".")
     except InvalidOperation:
         return text
+
+
+def _normalized_source_item_id(value: object) -> str:
+    """Match copied legacy IDs without preserving incidental casing/space drift."""
+    return display_text(value).strip().casefold()
 
 
 class CoreStore:
@@ -220,6 +227,18 @@ class CoreStore:
             )
             self.connection.execute("UPDATE core_items SET imported_at = CURRENT_TIMESTAMP WHERE item_id = ?", (item["item_id"],))
         return True
+
+    def backfill_canonical_usa_name(self, item_id: str, usa_name: str) -> bool:
+        """Fill a verified USA name only when the imported canonical field remains blank."""
+        if not usa_name or self.override_for(item_id).get("usa_name"):
+            return False
+        with self.connection:
+            cursor = self.connection.execute(
+                "UPDATE core_items SET usa_name = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE item_id = ? AND core_created = 0 AND trim(coalesce(usa_name, '')) = ''",
+                (usa_name, item_id),
+            )
+        return cursor.rowcount == 1
 
     def create_canonical(self, item: dict[str, str], actor_username: str) -> dict[str, object]:
         if self.canonical_for(item["item_id"]) is not None:
@@ -395,6 +414,47 @@ class ItemExplorer:
                     values.setdefault(item_id, {}).update(dict(zip(selected, row[1:])))
         return values, conflicts
 
+    def _usa_name_values(self) -> tuple[dict[str, str], dict[str, str]]:
+        """Read only the verified TempDB ChangeName USA-declaration companion table.
+
+        A missing or malformed optional table has no USA-name source. Ambiguous or
+        blank USA rows are kept out of field import and quarantined separately,
+        while the base Item remains eligible for Core adoption.
+        """
+        table = "TempDB__ChangeName"
+        with self._lock:
+            present = self._connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+            ).fetchone()
+            if present is None:
+                return {}, {}
+            columns = {row[1].casefold(): row[1] for row in self._connection.execute(f'PRAGMA table_info("{table}")')}
+            required = {name: columns.get(name.casefold()) for name in ("Cust ID", "Item ID", "Declaration Name")}
+            if any(column is None for column in required.values()):
+                return {}, {}
+            select_clause = ", ".join('"' + str(required[name]) + '"' for name in ("Cust ID", "Item ID", "Declaration Name"))
+            rows = self._connection.execute(f'SELECT {select_clause} FROM "{table}"').fetchall()
+        values: dict[str, str] = {}
+        issues: dict[str, str] = {}
+        seen: set[str] = set()
+        for customer_id, item_id, declaration_name in rows:
+            if display_text(customer_id).strip().casefold() != "usa":
+                continue
+            item_key = _normalized_source_item_id(item_id)
+            if not item_key:
+                continue
+            if item_key in seen:
+                values.pop(item_key, None)
+                issues[item_key] = "duplicate_usa_name_item_id"
+                continue
+            seen.add(item_key)
+            value = display_text(declaration_name).strip()
+            if value:
+                values[item_key] = value
+            else:
+                issues[item_key] = "blank_usa_name"
+        return values, issues
+
     def _baseline_items(self) -> list[dict[str, str]]:
         source_by_casefold = {column.casefold(): column for column in self._source_columns}
         available = {
@@ -408,15 +468,21 @@ class ItemExplorer:
         with self._lock:
             rows = self._connection.execute(f'SELECT {selected} FROM "MainDB__ITEM" ORDER BY "Item ID"').fetchall()
         auxiliary_values, auxiliary_conflicts = self._auxiliary_item_values()
+        usa_name_values, usa_name_issues = self._usa_name_values()
         items = []
         for row in rows:
             values = dict(zip(available, row))
             item = {"item_id": display_text(values["item_id"])}
+            source_item_key = _normalized_source_item_id(item["item_id"])
             for field in EDITABLE_FIELDS:
                 value = values.get(field, "")
                 item[field] = _number_text(value) if field in _DECIMAL_FIELDS | _INTEGER_FIELDS else display_text(value)
             for field, value in auxiliary_values.get(item["item_id"], {}).items():
                 item[field] = _number_text(value) if field in _DECIMAL_FIELDS | _INTEGER_FIELDS else display_text(value)
+            if source_item_key in usa_name_values and not item["usa_name"].strip():
+                item["usa_name"] = usa_name_values[source_item_key]
+            if source_item_key in usa_name_issues:
+                item["_usa_name_issue"] = usa_name_issues[source_item_key]
             if item["item_id"] in auxiliary_conflicts:
                 item["_auxiliary_conflict"] = "duplicate_auxiliary_item_id"
             item["family"] = item["phyto_family"]
@@ -629,6 +695,10 @@ class ItemExplorer:
                             if row[field] and field in store.override_for(item_id) and store.override_for(item_id)[field] != row[field]
                         )
                     store.import_canonical(row, artifact_path=str(self.source_path), artifact_sha256=self._source_sha256)
+                    if row.get("usa_name") and "_usa_name_issue" not in row:
+                        store.backfill_canonical_usa_name(item_id, row["usa_name"])
+                    if "_usa_name_issue" in row:
+                        store.quarantine(item_id, row["_usa_name_issue"])
                     counts["accepted"] += 1
         for item_id in sorted(store.override_ids() - source_item_ids):
             store.quarantine(item_id, "unmatched_override")
@@ -648,24 +718,41 @@ def _staff_identity_shell(html: str) -> str:
 
 
 def _menu_html_body_existing() -> str:
-    return """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>APC Core</title><style>:root{--ink:#202124;--muted:#6e737b;--line:#e6e6e8;--canvas:#eadbc8;--paper:#fff;--accent:#1d6b57;--mint-tint:#dff3ea;--mint-mid:#5fb890;--pink-tint:#fbe4ea;--pink-mid:#e2809a;--blue-tint:#e4edfc;--blue-mid:#6fa3e0}*{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--ink);font:15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.shell{max-width:900px;margin:auto;padding:56px 24px;position:relative;z-index:1}.brand{font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:18px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.card{min-height:156px;border:2px solid var(--line);border-radius:20px;background:var(--paper);padding:22px;text-decoration:none;color:inherit;display:flex;flex-direction:column;justify-content:space-between;box-shadow:4px 4px 0 rgba(32,33,36,.14);transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease}.card h2{font-size:21px;margin:0}.card.mint{background:var(--mint-tint);border-color:var(--mint-mid)}.card.pink{background:var(--pink-tint);border-color:var(--pink-mid)}.card.blue{background:var(--blue-tint);border-color:var(--blue-mid)}.card.mint:hover,.card.mint:focus-visible{transform:translate(-2px,-2px);box-shadow:6px 6px 0 rgba(95,184,144,.45)}.card.pink:hover,.card.pink:focus-visible{transform:translate(-2px,-2px);box-shadow:6px 6px 0 rgba(226,128,154,.45)}.card.blue:hover,.card.blue:focus-visible{transform:translate(-2px,-2px);box-shadow:6px 6px 0 rgba(111,163,224,.45)}.card:focus-visible{outline:3px solid var(--accent);outline-offset:3px}.card p{color:var(--muted)}.open{font-weight:600;color:var(--accent)}.card.soon{background:#fbf9f5;border:2px dashed var(--line);box-shadow:none;opacity:.75}.label{font-size:12px}@media(max-width:620px){.grid{grid-template-columns:1fr}}</style><body><main class="shell"><div class="brand">APC Core</div><section class="grid" aria-label="APC Core modules"><a class="card mint" href="items/"><div><h2>Items</h2><p>Search and inspect the item catalogue.</p></div><span class="open">Open Item Explorer →</span></a><div class="card soon"><div><h2>Orders</h2><p>Order work will appear here.</p></div><span class="label">Coming soon</span></div><a class="card pink" href="customers/"><div><h2>Customers</h2><p>Search and inspect Core-owned customer records.</p></div><span class="open">Open Customer Explorer →</span></a><a class="card blue" href="customer-prices/"><div><h2>Customer Prices</h2><p>Search and safely edit imported customer-item price rows.</p></div><span class="open">Open Customer Price →</span></a><div class="card soon"><div><h2>Shipments</h2><p>Shipment tracking will appear here.</p></div><span class="label">Coming soon</span></div><div class="card soon"><div><h2>Activity</h2><p>Shared activity will appear here.</p></div><span class="label">Coming soon</span></div></section></main></body></html>"""
+    return """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>APC Core</title><style>:root{--ink:#202124;--muted:#6e737b;--line:#e6e6e8;--canvas:#eadbc8;--paper:#fff;--accent:#1d6b57;--mint-tint:#dff3ea;--mint-mid:#5fb890;--pink-tint:#fbe4ea;--pink-mid:#e2809a;--blue-tint:#e4edfc;--blue-mid:#6fa3e0;--amber-tint:#fdf1d4;--amber-mid:#d9ad42}*{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--ink);font:15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.shell{max-width:900px;margin:auto;padding:56px 24px;position:relative;z-index:1}.brand{font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:18px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.card{min-height:156px;border:2px solid var(--line);border-radius:20px;background:var(--paper);padding:22px;text-decoration:none;color:inherit;display:flex;flex-direction:column;justify-content:space-between;box-shadow:4px 4px 0 rgba(32,33,36,.14);transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease}.card h2{font-size:21px;margin:0}.card.mint{background:var(--mint-tint);border-color:var(--mint-mid)}.card.pink{background:var(--pink-tint);border-color:var(--pink-mid)}.card.blue{background:var(--blue-tint);border-color:var(--blue-mid)}.card.amber{background:var(--amber-tint);border-color:var(--amber-mid)}.card.mint:hover,.card.mint:focus-visible{transform:translate(-2px,-2px);box-shadow:6px 6px 0 rgba(95,184,144,.45)}.card.pink:hover,.card.pink:focus-visible{transform:translate(-2px,-2px);box-shadow:6px 6px 0 rgba(226,128,154,.45)}.card.blue:hover,.card.blue:focus-visible{transform:translate(-2px,-2px);box-shadow:6px 6px 0 rgba(111,163,224,.45)}.card.amber:hover,.card.amber:focus-visible{transform:translate(-2px,-2px);box-shadow:6px 6px 0 rgba(217,173,66,.45)}.card:focus-visible{outline:3px solid var(--accent);outline-offset:3px}.card p{color:var(--muted)}.open{font-weight:600;color:var(--accent)}.card.soon{background:#fbf9f5;border:2px dashed var(--line);box-shadow:none;opacity:.75}.label{font-size:12px}@media(max-width:620px){.grid{grid-template-columns:1fr}}</style><body><main class="shell"><div class="brand">APC Core</div><section class="grid" aria-label="APC Core modules"><a class="card mint" href="items/"><div><h2>Items</h2><p>Search and inspect the item catalogue.</p></div><span class="open">Open Item Explorer →</span></a><div class="card soon"><div><h2>Orders</h2><p>Order work will appear here.</p></div><span class="label">Coming soon</span></div><a class="card pink" href="customers/"><div><h2>Customers</h2><p>Search and inspect Core-owned customer records.</p></div><span class="open">Open Customer Explorer →</span></a><a class="card blue" href="customer-prices/"><div><h2>Customer Prices</h2><p>Search and safely edit imported customer-item price rows.</p></div><span class="open">Open Customer Price →</span></a><div class="card soon"><div><h2>Shipments</h2><p>Shipment tracking will appear here.</p></div><span class="label">Coming soon</span></div><div class="card soon"><div><h2>Activity</h2><p>Shared activity will appear here.</p></div><span class="label">Coming soon</span></div></section></main></body></html>"""
 
 
-def _menu_html_body() -> str:
+def _menu_html_body(*, customer_available: bool = True, customer_prices_available: bool = True, orders_available: bool = True, awb_available: bool | None = None) -> str:
     body = _menu_html_body_existing().replace(
         '<div class="card soon"><div><h2>Orders</h2><p>Order work will appear here.</p></div><span class="label">Coming soon</span></div>',
         "",
         1,
     )
-    return body.replace(
+    if awb_available is True:
+        body = body.replace(
+            '<div class="card soon"><div><h2>Shipments</h2><p>Shipment tracking will appear here.</p></div><span class="label">Coming soon</span></div>',
+            '<a class="card amber" href="shipments/"><div><span class="label">Read-only</span><h2>Shipments</h2><p>Browse A.W.B. shipment records and freight provenance.</p></div><span class="open">Open Shipments &rarr;</span></a>',
+            1,
+        )
+    elif awb_available is False:
+        body = body.replace(
+            '<div class="card soon"><div><h2>Shipments</h2><p>Shipment tracking will appear here.</p></div><span class="label">Coming soon</span></div>',
+            "",
+            1,
+        )
+    body = body.replace(
         '<section class="grid" aria-label="APC Core modules">',
-        '<section class="grid" aria-label="APC Core modules"><a class="card mint" href="orders/"><div><span class="label">Read-only</span><h2>Orders</h2><p>Open and review saved order forms and customer templates.</p></div><span class="open">Open Orders →</span></a>',
+        '<section class="grid" aria-label="APC Core modules">' + ('<a class="card mint" href="orders/"><div><span class="label">Read-only</span><h2>Orders</h2><p>Open and review saved order forms and customer templates.</p></div><span class="open">Open Orders →</span></a>' if orders_available else ''),
         1,
     )
+    if not customer_available:
+        body = body.replace('<a class="card pink" href="customers/"><div><h2>Customers</h2><p>Search and inspect Core-owned customer records.</p></div><span class="open">Open Customer Explorer →</span></a>', '', 1)
+    if not customer_prices_available:
+        body = body.replace('<a class="card blue" href="customer-prices/"><div><h2>Customer Prices</h2><p>Search and safely edit imported customer-item price rows.</p></div><span class="open">Open Customer Price →</span></a>', '', 1)
+    return body
 
 
-def _menu_html() -> str:
-    return _staff_identity_shell(_menu_html_body())
+def _menu_html(*, customer_available: bool = True, customer_prices_available: bool = True, orders_available: bool = True, awb_available: bool | None = None) -> str:
+    return _staff_identity_shell(_menu_html_body(customer_available=customer_available, customer_prices_available=customer_prices_available, orders_available=orders_available, awb_available=awb_available))
 
 
 def _item_explorer_html_body() -> str:
@@ -750,10 +837,16 @@ def _customer_explorer_html() -> str:
 
 def _order_explorer_html() -> str:
     """Read-only frmOrderForm-style workspace; all data comes from same-origin GETs."""
-    return _staff_identity_shell("""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>APC Core · Order Forms</title><style>:root{--ink:#24272b;--line:#e5e1db;--cream:#eadbc8;--paper:#fffdfa;--accent:#1d6b57}*{box-sizing:border-box}body{margin:0;background:var(--cream);color:var(--ink);font:14px system-ui,sans-serif}.shell{max-width:1500px;margin:auto;padding:28px}.workspace{display:grid;grid-template-columns:260px minmax(390px,1fr) 310px;gap:12px}.pane{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:14px;min-width:0}label{display:block;font-weight:700;margin:8px 0}input,button,textarea{font:inherit;padding:9px;border:1px solid var(--line);border-radius:7px;width:100%}button{cursor:pointer;background:var(--accent);color:#fff;font-weight:700}.secondary{background:#fff;color:var(--accent)}.toolbar{display:flex;gap:8px;margin-bottom:12px}.toolbar button{width:auto}.preview{color:#58636c;font-size:12px}.notes{white-space:pre-wrap}.modal{position:fixed;inset:0;background:#0006;display:grid;place-items:center;padding:20px}.modal[hidden]{display:none}.dialog{width:min(1100px,100%);max-height:90vh;overflow:auto;background:var(--paper);border-radius:12px;padding:18px}.filters{display:flex;gap:8px;flex-wrap:wrap}.filters input{width:180px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border-bottom:1px solid var(--line);padding:8px;text-align:left}tr[tabindex]{cursor:pointer}tr[tabindex]:focus{outline:3px solid var(--accent);outline-offset:-3px}@media(max-width:900px){.workspace{grid-template-columns:1fr}.shell{padding:12px}}</style><body><main class="shell" id="frmOrderForm"><a href="../">Main menu</a><h1>Order Forms</h1><div class="toolbar"><button id="open-order-forms" type="button">&amp;Open</button><button type="button" class="secondary" data-preview="Edit">Edit</button><button type="button" class="secondary" data-preview="Print">Print</button></div><p id="status" class="preview">Saved order display cleared · template preview</p><section class="workspace"><aside class="pane"><h2>Customer template</h2><label>Customer code<input id="customer-code" list="customer-code-options" autocomplete="off"></label><datalist id="customer-code-options"></datalist><p id="customer-name"></p><label>Consignee<select id="consignees"></select></label><label>Order config<textarea id="order-config" readonly></textarea></label><label>Invoice config<textarea id="invoice-config" readonly></textarea></label></aside><section class="pane"><h2>Order lines</h2><p id="order-label">Template preview</p><table><thead><tr><th>Line</th><th>Item</th><th>Description</th><th>Qty</th></tr></thead><tbody id="lines"></tbody></table></section><aside class="pane"><h2>Notes</h2><h3>Order</h3><div id="order-notes" class="notes"></div><h3>Invoice</h3><div id="invoice-notes" class="notes"></div><p class="preview">Nonnavigation actions are preview-only.</p></aside></section></main><section id="frmOrderFormList" class="modal" role="dialog" aria-modal="true" aria-labelledby="order-list-title" hidden><div class="dialog"><div class="toolbar"><h2 id="order-list-title">Open order</h2><button id="close-order-forms" type="button" class="secondary">Close</button></div><div class="filters"><label>Date from<input id="date-from" type="date"></label><label>Date to<input id="date-to" type="date"></label><label>Customer<input id="customer-filter"></label><button id="search-orders" type="button">Search</button></div><p id="order-total"></p><table><thead><tr><th>Date</th><th>Cust</th><th>Country</th><th>AWB</th><th>Order No.</th><th>B/I/M/P/W/U/T</th></tr></thead><tbody id="order-results"></tbody></table><button id="edit-selected" type="button" class="secondary">Edit selected</button></div></section><script>(()=>{const $=s=>document.querySelector(s),openButton=$('#open-order-forms'),modal=$('#frmOrderFormList'),getJSON=path=>fetch(path,{credentials:'same-origin',cache:'no-store'}).then(r=>r.ok?r.json():Promise.reject(new Error('Read failed'))),clean=node=>node.replaceChildren(),text=(node,value)=>node.textContent=value||'';let selected='';function option(value){const node=document.createElement('option');node.value=value;return node}function clearSavedOrder(){selected='';text($('#order-label'),'Template preview');clean($('#lines'));text($('#status'),'Saved order display cleared · template preview')}function renderTemplate(data){$('#customer-code').value=data.customer_id;text($('#customer-name'),data.customer_name);$('#consignees').replaceChildren(...data.consignee_candidates.map(value=>option(value)));$('#order-config').value=data.order_config;$('#invoice-config').value=data.invoice_config;text($('#order-notes'),data.order_notes.join('\\n'));text($('#invoice-notes'),data.invoice_notes.join('\\n'));clearSavedOrder()}function renderOrder(data){selected=data.order_id;text($('#order-label'),'Saved order '+data.order_id);const body=$('#lines');clean(body);data.lines.forEach(line=>{const row=document.createElement('tr');for(const value of [line.line_no,line.item_id,line.item_description||line.item_description_th,line.qty]){const cell=document.createElement('td');text(cell,value);row.append(cell)}body.append(row)});text($('#status'),'Read-only saved order preview')}function loadOrder(orderNo){return getJSON('api/orders/'+encodeURIComponent(orderNo)).then(renderOrder)}function templateFor(code){return getJSON('api/customer-template/'+encodeURIComponent(code)).then(renderTemplate)}let codes=[];function commitCustomerCode(){const typed=$('#customer-code').value.trim();if(typed)templateFor(typed).catch(()=>text($('#status'),'Customer template not found'))}function close(){modal.hidden=true;openButton.focus()}function rowFor(order){const row=document.createElement('tr');row.tabIndex=0;for(const value of [order.order_date,order.customer_id,'—','—',order.order_id,'—']){const cell=document.createElement('td');text(cell,value);row.append(cell)}const pick=()=>{selected=order.order_id;loadOrder(order.order_id);close()};row.addEventListener('dblclick',pick);row.addEventListener('keydown',event=>{if(event.key==='Enter')pick()});row.addEventListener('click',()=>selected=order.order_id);return row}function search(){const params=new URLSearchParams();[['customer','customer-filter'],['date_from','date-from'],['date_to','date-to']].forEach(([key,id])=>{if($( '#'+id).value)params.set(key,$('#'+id).value)});return getJSON('api/orders?'+params).then(data=>{text($('#order-total'),'Total: '+data.total);$('#order-results').replaceChildren(...data.orders.map(rowFor));codes=[...new Set(data.orders.map(order=>order.customer_id))];$('#customer-code-options').replaceChildren(...codes.map(option))})}openButton.onclick=()=>{modal.hidden=false;$('#date-from').focus();search()};$('#close-order-forms').onclick=close;$('#search-orders').onclick=search;$('#edit-selected').onclick=()=>{if(selected)loadOrder(selected).then(close)};$('#customer-code').addEventListener('keydown',event=>{if(event.key==='Enter'||event.key==='Tab'){commitCustomerCode()}});document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!modal.hidden)close()});document.querySelectorAll('[data-preview]').forEach(button=>button.onclick=()=>text($('#status'),button.dataset.preview+' is preview-only; no saved-order mutation.'));})();</script></body></html>""")
+    return _staff_identity_shell("""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>APC Core · Order Forms</title>
+<style>:root{--ink:#24272b;--muted:#68717c;--line:#e5e1db;--cream:#eadbc8;--paper:#fffdfa;--accent:#1d6b57;--warn:#8a6100}*{box-sizing:border-box}body{margin:0;background:var(--cream);color:var(--ink);font:14px system-ui,sans-serif}.shell{max-width:1500px;margin:auto;padding:28px}.utility,.toolbar,.header-grid,.workspace,.filters{display:flex;gap:10px;align-items:center}.utility{justify-content:space-between;color:var(--muted);font-size:12px}.workspace{align-items:start}.main{min-width:0;flex:1}.rail{width:290px}.pane{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}.header-grid{display:grid;grid-template-columns:120px 1fr 1fr 160px;align-items:stretch}.order-id{font-size:20px;font-weight:800;color:var(--accent)}label{display:block;font-weight:700;margin:6px 0}input,select,textarea,button{font:inherit;padding:9px;border:1px solid var(--line);border-radius:7px;width:100%}button{cursor:pointer;background:var(--accent);color:#fff;font-weight:700}.secondary{background:#fff;color:var(--accent)}.guarded{color:#777;background:#f4f2ee;cursor:not-allowed}.unmapped{color:var(--warn);font-size:12px}.notes{white-space:pre-wrap;min-height:48px}.shipment{color:var(--muted);padding:11px;background:#f7f4ef}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;margin-top:8px}th,td{border-bottom:1px solid var(--line);padding:8px;text-align:left;vertical-align:top}td.qty,td.ln{text-align:right}.annotation td{font-style:italic;background:#fff8df}.annotation td.annotation-text{font-weight:700}.modal{position:fixed;inset:0;background:#0006;display:grid;place-items:center;padding:20px;z-index:5}.modal[hidden]{display:none}.dialog{width:min(1160px,100%);max-height:90vh;overflow:auto;background:var(--paper);border-radius:12px;padding:18px}.filters{flex-wrap:wrap}.filters label{min-width:160px;flex:1}.selected{background:#dcefe5}tr[tabindex]{cursor:pointer}tr[tabindex]:focus{outline:3px solid var(--accent);outline-offset:-3px}@media(max-width:900px){.workspace{display:block}.rail{width:auto}.shell{padding:12px}.header-grid{grid-template-columns:1fr 1fr}}</style>
+<body><main id="frmOrderForm" class="shell"><div class="utility"><a href="../">Main menu</a><span>Order Forms · Read-only snapshot</span></div><div class="toolbar"><button id="open-order-forms" type="button">Open</button><span id="status">Template preview</span></div>
+<section class="pane"><div class="header-grid"><label>Customer code<input id="customer-code" list="customer-code-options" autocomplete="off"></label><datalist id="customer-code-options"></datalist><div><b>Customer name</b><div id="customer-name">—</div></div><label>Consignee (customer candidates)<select id="consignees"></select></label><div><b>Order No.</b><div id="order-id" class="order-id">—</div></div></div><div class="header-grid"><label>Order date<input id="order-date" readonly></label><label>Order config<textarea id="order-config" readonly></textarea></label><label>Invoice config<textarea id="invoice-config" readonly></textarea></label><div><b>Port / Country</b><div class="unmapped">unmapped</div></div></div></section>
+<section class="pane shipment"><b>Shipment & packing — not yet mapped</b><span class="unmapped"> · AWB remains a separate module until a verified Order↔AWB link exists.</span></section>
+<section class="workspace"><div class="main"><section class="pane"><h2>Order lines</h2><div class="table-wrap"><table><thead><tr><th>Ln</th><th>Item ID</th><th>Qty</th><th>Description Thai</th><th>##</th><th>Description Eng</th></tr></thead><tbody id="lines"></tbody></table></div></section><section class="pane"><b>Selected line (read-only)</b><div id="selected-line">Select an order line.</div></section></div><aside class="rail"><section class="pane"><h2>Notes</h2><h3>Order notes (customer template)</h3><div id="order-notes" class="notes"></div><h3>Invoice notes (customer template)</h3><div id="invoice-notes" class="notes"></div><h3>Order note (this order)</h3><div class="unmapped">unmapped</div></section><section class="pane"><h2>Guarded actions</h2><button type="button" class="guarded" aria-disabled="true" tabindex="-1">New · guarded</button><button type="button" class="guarded" aria-disabled="true" tabindex="-1">Save · guarded</button><button type="button" class="guarded" aria-disabled="true" tabindex="-1">Print · guarded</button></section></aside></section></main>
+<section id="frmOrderFormList" class="modal" role="dialog" aria-modal="true" aria-labelledby="order-list-title" hidden><div class="dialog"><div class="toolbar"><h2 id="order-list-title">Open order</h2><button id="close-order-forms" type="button" class="secondary">Close</button></div><div class="filters"><label>Order date From<input id="date-from" type="date"></label><label>Order date To<input id="date-to" type="date"></label><label>Customer<input id="customer-filter"></label><button id="search-orders" type="button">Search</button></div><p id="order-total"></p><div class="table-wrap"><table><thead><tr><th>Date</th><th>Cust</th><th>Customer name</th><th>Country <span class="unmapped">unmapped</span></th><th>AWB <span class="unmapped">unmapped</span></th><th>Order No.</th><th>B/L/M/P/W/U/T</th></tr></thead><tbody id="order-results"></tbody></table></div><div class="toolbar"><button id="open-selected" type="button">Open selected</button><button id="close-order-forms-bottom" type="button" class="secondary">Close</button></div></div></section>
+<script>(()=>{const $=s=>document.querySelector(s),clean=n=>n.replaceChildren(),put=(n,v)=>n.textContent=v||'',getJSON=p=>fetch(p,{credentials:'same-origin',cache:'no-store'}).then(r=>r.ok?r.json():Promise.reject(new Error('Read failed'))),openButton=$('#open-order-forms'),modal=$('#frmOrderFormList');let selected='',selectedRow=null;function choose(row,order){if(selectedRow)selectedRow.classList.remove('selected');selectedRow=row;selected=order.order_id;row.classList.add('selected')}function renderTemplate(data){$('#customer-code').value=data.customer_id;put($('#customer-name'),data.customer_name);$('#consignees').replaceChildren(...data.consignee_candidates.map(v=>{const o=document.createElement('option');o.textContent=v;return o}));$('#order-config').value=data.order_config;$('#invoice-config').value=data.invoice_config;put($('#order-notes'),data.order_notes.join('\\n'));put($('#invoice-notes'),data.invoice_notes.join('\\n'))}function inspect(line){put($('#selected-line'),[line.item_id,line.qty,line.description_th,line.reference,line.description_en].join(' · '))}function renderOrder(data){selected=data.order_id;put($('#order-id'),data.order_id);$('#order-date').value=data.order_date;put($('#status'),'Read-only saved order '+data.order_id);const body=$('#lines');clean(body);data.lines.forEach(line=>{const row=document.createElement('tr');if(line.is_annotation){row.className='annotation'}for(const [i,value] of [line.line_no,line.item_id,line.qty,line.description_th,line.reference,line.description_en].entries()){const cell=document.createElement('td');cell.className=i===0?'ln':i===2?'qty':line.is_annotation&&i===3?'annotation-text':'';put(cell,value);row.append(cell)}row.tabIndex=0;row.onclick=()=>inspect(line);row.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();inspect(line)}};body.append(row)})}function loadOrder(orderNo){return getJSON('api/orders/'+encodeURIComponent(orderNo)).then(renderOrder)}function templateFor(code){return getJSON('api/customer-template/'+encodeURIComponent(code)).then(renderTemplate)}function commitCustomerCode(){const code=$('#customer-code').value.trim();if(code)templateFor(code).catch(()=>put($('#status'),'Customer template not found'))}function close(){modal.hidden=true;openButton.focus()}function rowFor(order){const row=document.createElement('tr');row.tabIndex=0;for(const value of [order.order_date,order.customer_id,order.customer_name,'—','—',order.order_id,'—']){const cell=document.createElement('td');put(cell,value);row.append(cell)}row.onclick=()=>choose(row,order);row.ondblclick=()=>{choose(row,order);loadOrder(order.order_id).then(close)};row.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();choose(row,order);loadOrder(order.order_id).then(close)}};return row}function search(){const q=new URLSearchParams();[['customer','customer-filter'],['date_from','date-from'],['date_to','date-to']].forEach(([key,id])=>{if($('#'+id).value)q.set(key,$('#'+id).value)});return getJSON('api/orders?'+q).then(data=>{put($('#order-total'),'Total Record(s): '+data.total);const rows=data.orders.map(rowFor);$('#order-results').replaceChildren(...rows);if(rows.length)choose(rows[0],data.orders[0]);$('#customer-code-options').replaceChildren(...data.orders.map(order=>{const option=document.createElement('option');option.value=order.customer_id;return option}))})}openButton.onclick=()=>{modal.hidden=false;$('#date-from').focus();search()};$('#close-order-forms').onclick=close;$('#close-order-forms-bottom').onclick=close;$('#search-orders').onclick=search;$('#open-selected').onclick=()=>{if(selected)loadOrder(selected).then(close)};$('#customer-code').onkeydown=e=>{if(e.key==='Enter'||e.key==='Tab')commitCustomerCode()};document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!modal.hidden)close()})})();</script></body></html>""")
 
-
-def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None, customer_price_module=None, order_explorer=None, *, customer_lan_ingress: bool = False, allowed_mutation_origins: frozenset[str] | None = None, recovery_authorizer=None, recovery_service=None, recovery_maintenance=None):
+def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None, customer_price_module=None, order_explorer=None, awb_explorer=None, *, customer_lan_ingress: bool = False, allowed_mutation_origins: frozenset[str] | None = None, recovery_authorizer=None, recovery_service=None, recovery_maintenance=None):
     # A request holds this for its full lifetime. Recovery therefore cannot close/swap
     # Core SQLite while an ordinary request is reading or writing it.
     request_gate = threading.RLock()
@@ -839,7 +932,7 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                 self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer access is loopback-only unless customer LAN ingress is enabled"})
                 return
             if parsed.path == "/":
-                body = _menu_html().encode("utf-8")
+                body = _menu_html(customer_available=customer_explorer is not None, customer_prices_available=customer_price_module is not None, orders_available=order_explorer is not None, awb_available=awb_explorer is not None).encode("utf-8")
                 self.send_response(HTTPStatus.OK); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
             if order_explorer is not None and parsed.path == "/orders":
                 self.send_response(HTTPStatus.PERMANENT_REDIRECT)
@@ -867,6 +960,35 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
             if order_explorer is not None and parsed.path.startswith("/orders/api/customer-template/"):
                 template = order_explorer.customer_template(unquote(parsed.path.removeprefix("/orders/api/customer-template/")))
                 self._send_json(HTTPStatus.OK, template) if template is not None else self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                return
+            if awb_explorer is not None and parsed.path == "/shipments":
+                self.send_response(HTTPStatus.PERMANENT_REDIRECT)
+                self.send_header("Location", "shipments/")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
+            if awb_explorer is not None and parsed.path == "/shipments/":
+                self._send_html(HTTPStatus.OK, _staff_identity_shell(awb_explorer_html()))
+                return
+            if awb_explorer is not None and parsed.path == "/shipments/api/shipments":
+                try:
+                    query = parse_qs(parsed.query)
+                    self._send_json(HTTPStatus.OK, awb_explorer.search_shipments(
+                        date_from=query.get("date_from", [""])[0], date_to=query.get("date_to", [""])[0],
+                        invoice_prefix=query.get("invoice", [""])[0], awb_prefix=query.get("awb", [""])[0],
+                        anomaly_only=query.get("anomaly_only", ["1"])[0] != "0",
+                        limit=query.get("limit", [50])[0], offset=query.get("offset", [0])[0],
+                    ))
+                except (ValueError, sqlite3.Error):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid shipment query"})
+                return
+            if awb_explorer is not None and parsed.path.startswith("/shipments/api/shipments/"):
+                try:
+                    shipment = awb_explorer.open_shipment_by_id(unquote(parsed.path.removeprefix("/shipments/api/shipments/")))
+                except (ValueError, sqlite3.Error):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid shipment query"})
+                else:
+                    self._send_json(HTTPStatus.OK, shipment) if shipment is not None else self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
                 return
             if parsed.path == "/items/":
                 body = _item_explorer_html().encode("utf-8")
@@ -957,6 +1079,9 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
             customer_path = _canonical_program_path(urlparse(self.path).path)
             if customer_path == "/orders" or customer_path.startswith("/orders/"):
                 self._send_json(HTTPStatus.METHOD_NOT_ALLOWED, {"error": "order forms are read-only"})
+                return
+            if customer_path == "/shipments" or customer_path.startswith("/shipments/"):
+                self._send_json(HTTPStatus.METHOD_NOT_ALLOWED, {"error": "shipments are read-only"})
                 return
             if (customer_path.startswith("/admin/recovery/")
                     or customer_path.startswith("/customer-prices/api/customers/")

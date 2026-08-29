@@ -245,6 +245,39 @@ class ProgramShellTests(unittest.TestCase):
         self.assertIn('href="customer-prices/"', html)
         self.assertIn("<h2>Customer Prices</h2><p>Search and safely edit imported customer-item price rows.</p></div><span class=\"open\">Open Customer Price →</span>", html)
 
+    def test_main_menu_hides_unavailable_optional_module_cards(self):
+        html = _menu_html_body(
+            customer_available=False,
+            customer_prices_available=False,
+            orders_available=False,
+            awb_available=False,
+        )
+        self.assertIn('href="items/"', html)
+        for route, label in (("customers/", "Customers"), ("customer-prices/", "Customer Prices"), ("orders/", "Orders"), ("shipments/", "Shipments")):
+            self.assertNotIn(route, html)
+            self.assertNotIn(f"<h2>{label}</h2>", html)
+
+    def test_items_only_handler_does_not_handle_optional_module_routes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            explorer = ItemExplorer(_snapshot(root), data_dir=root / "state")
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(explorer, {"accepted": True}))
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                port = int(server.server_address[1])
+                for path in ("/program/items/", "/program/customers/", "/program/customer-prices/", "/program/orders/", "/program/shipments/"):
+                    connection = HTTPConnection("127.0.0.1", port, timeout=3)
+                    connection.request("GET", path)
+                    response = connection.getresponse()
+                    response.read()
+                    connection.close()
+                    self.assertEqual(200 if path.endswith("items/") else 404, response.status, path)
+            finally:
+                server.shutdown()
+                server.server_close()
+                explorer.close()
+
     def test_order_forms_are_canonical_get_only_routes_with_no_mutation_fallthrough(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -324,9 +357,10 @@ class ProgramShellTests(unittest.TestCase):
         html = module._order_explorer_html()
         for marker in (
             'id="frmOrderForm"', 'id="open-order-forms"', 'id="frmOrderFormList"', 'role="dialog"',
-            'Date', 'Cust', 'Country', 'AWB', 'Order No.', 'B/I/M/P/W/U/T', 'function loadOrder(',
-            "event.key==='Escape'", 'openButton.focus()', "credentials:'same-origin'", "cache:'no-store'",
-            'id="customer-code-options"', 'function commitCustomerCode(', 'textContent=', 'preview-only',
+            'Description Thai', '##', 'Description Eng', 'B/L/M/P/W/U/T', 'Open selected',
+            'Shipment & packing — not yet mapped', 'Order note (this order)', 'guarded',
+            'function loadOrder(', "e.key==='Escape'", 'openButton.focus()', "credentials:'same-origin'", "cache:'no-store'",
+            'id="customer-code-options"', 'function commitCustomerCode(', 'textContent=', 'annotation',
         ):
             self.assertIn(marker, html)
         self.assertIn('href="orders/"', _menu_html_body())
@@ -336,11 +370,13 @@ class ProgramShellTests(unittest.TestCase):
         self.assertNotIn("innerHTML", html)
         self.assertNotIn("fetch('/", html)
         self.assertNotRegex(html, r"fetch\([^)]*method\s*:")
+        self.assertNotIn('data-preview=', html)
+        self.assertNotIn('B/I/M/P/W/U/T', html)
 
     def test_order_forms_customer_template_ui_hydrates_the_typed_code_not_only_loaded_orders(self):
         import apc_core.item_explorer as module
         html = module._order_explorer_html()
-        self.assertIn("templateFor(typed)", html)
+        self.assertIn("templateFor(code)", html)
         self.assertIn("$('#customer-code').value=data.customer_id", html)
 
 

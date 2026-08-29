@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .item_explorer import ItemExplorer, make_handler
 from .order_explorer import OrderExplorer
+from .awb_explorer import AWBExplorer, ReadOnlySourceContractError as AWBSourceContractError
 from .recovery import RecoveryAuthorizer, RecoveryService
 from .customer_explorer import CustomerExplorer
 from .customer_price_module import CustomerPriceModule
@@ -145,37 +146,56 @@ def load_accepted_customer_price_runtime(manifest_path: Path, *, data_dir: Path 
         os.close(descriptor)
 
 
-def load_accepted_customer_price_order_runtime(manifest_path: Path, *, data_dir: Path | None = None) -> tuple[ItemExplorer, CustomerExplorer, CustomerPriceModule, OrderExplorer, dict]:
+def load_accepted_customer_price_order_runtime(manifest_path: Path, *, data_dir: Path | None = None) -> tuple[ItemExplorer, CustomerExplorer | None, CustomerPriceModule | None, OrderExplorer | None, AWBExplorer | None, dict]:
     """Build all Order Forms dependencies from the one verified accepted descriptor."""
     descriptor, artifact_path, manifest = _read_accepted_manifest(manifest_path)
     item_explorer = customer_explorer = price_module = order_explorer = None
     try:
-        if manifest.get("customer_ready") is not True or manifest.get("required_customer_columns") != sorted(REQUIRED_CUSTOMER_COLUMNS):
-            raise RuntimeContractError("refusing non-customer-ready accepted artifact")
         item_explorer = ItemExplorer.from_open_descriptor(descriptor, artifact_path, data_dir=data_dir)
-        customer_explorer = CustomerExplorer(artifact_path, data_dir=data_dir)
-        if customer_explorer.reconciliation_status()["source_sha256"] != manifest["accepted_artifact_sha256"]:
-            customer_explorer.close()
-            raise RuntimeContractError("refusing mismatched customer accepted artifact")
-        if customer_explorer.reconciliation_status()["state"] != "ready":
-            customer_explorer.backfill_from_snapshot()
-        price_module = CustomerPriceModule.from_open_descriptor(descriptor, artifact_path, data_dir=data_dir)
-        if price_module.reconciliation_status()["state"] != "ready":
-            price_module.import_from_snapshot()
-        order_explorer = OrderExplorer.from_open_descriptor(descriptor, artifact_path)
-        return item_explorer, customer_explorer, price_module, order_explorer, manifest
-    except RuntimeContractError:
-        raise
+        capabilities = manifest.get("capabilities")
+        def verified_capability(name: str) -> bool:
+            capability = capabilities.get(name) if type(capabilities) is dict else None
+            return type(capability) is dict and capability.get("ready") is True and capability.get("status") == "verified"
+        if verified_capability("customers"):
+            try:
+                customer_explorer = CustomerExplorer(artifact_path, data_dir=data_dir)
+                if customer_explorer.reconciliation_status()["source_sha256"] != manifest["accepted_artifact_sha256"]:
+                    raise ValueError
+                if customer_explorer.reconciliation_status()["state"] != "ready":
+                    customer_explorer.backfill_from_snapshot()
+            except (OSError, ValueError, sqlite3.Error):
+                if customer_explorer is not None:
+                    customer_explorer.close()
+                customer_explorer = None
+        if verified_capability("customer_prices"):
+            try:
+                price_module = CustomerPriceModule.from_open_descriptor(descriptor, artifact_path, data_dir=data_dir)
+                if price_module.reconciliation_status()["state"] != "ready":
+                    price_module.import_from_snapshot()
+            except (OSError, ValueError, sqlite3.Error):
+                if price_module is not None:
+                    price_module.close()
+                price_module = None
+        if verified_capability("orders"):
+            try:
+                order_explorer = OrderExplorer.from_open_descriptor(descriptor, artifact_path)
+            except (OSError, ValueError, sqlite3.Error):
+                order_explorer = None
+        # Shipments are optional: a snapshot exported before the AWB tables were
+        # included must still serve every other module. The route and menu card
+        # stay absent. Manifest capability is authoritative; absent or malformed
+        # declarations deny AWB.
+        if verified_capability("awb_shipments"):
+            try:
+                awb_explorer = AWBExplorer.from_open_descriptor(descriptor, artifact_path)
+            except (AWBSourceContractError, OSError, sqlite3.Error):
+                awb_explorer = None
+        else:
+            awb_explorer = None
+        return item_explorer, customer_explorer, price_module, order_explorer, awb_explorer, manifest
     except (OSError, ValueError, sqlite3.Error) as error:
         raise RuntimeContractError("refusing invalid customer-price-order accepted artifact") from None
     finally:
-        if order_explorer is None:
-            if price_module is not None:
-                price_module.close()
-            if customer_explorer is not None:
-                customer_explorer.close()
-            if item_explorer is not None:
-                item_explorer.close()
         os.close(descriptor)
 
 
@@ -219,17 +239,22 @@ def main() -> None:
     except RuntimeContractError as error:
         parser.error(str(error))
     recovery_authorizer, recovery_service = recovery_test_mode(data_dir=data_dir or Path("."))
-    item_explorer, customer_explorer, customer_price_module, order_explorer, manifest = load_accepted_customer_price_order_runtime(args.manifest, data_dir=data_dir)
+    item_explorer, customer_explorer, customer_price_module, order_explorer, awb_explorer, manifest = load_accepted_customer_price_order_runtime(args.manifest, data_dir=data_dir)
     def close_core_modules_for_recovery() -> None:
         """Maintenance boundary: no Core SQLite connection survives a generation switch."""
-        order_explorer.close()
-        customer_price_module.close()
-        customer_explorer.close()
+        if awb_explorer is not None:
+            awb_explorer.close()
+        if order_explorer is not None:
+            order_explorer.close()
+        if customer_price_module is not None:
+            customer_price_module.close()
+        if customer_explorer is not None:
+            customer_explorer.close()
         item_explorer.close()
 
     try:
         server = ThreadingHTTPServer((args.host, args.port), make_handler(
-            item_explorer, manifest, customer_explorer, customer_price_module, order_explorer,
+            item_explorer, manifest, customer_explorer, customer_price_module, order_explorer, awb_explorer,
             customer_lan_ingress=args.container_ingress,
             allowed_mutation_origins=mutation_origins,
             recovery_authorizer=recovery_authorizer, recovery_service=recovery_service,

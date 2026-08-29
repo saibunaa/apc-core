@@ -105,10 +105,25 @@ class ItemExplorerTests(unittest.TestCase):
                 self.assertIn("Items", menu_html)
                 self.assertNotIn("legacy", menu_html.lower())
                 self.assertNotIn("snapshot", menu_html.lower())
-                for module in ("Orders", "Customers", "Shipments", "Activity"):
-                    self.assertIn(module, menu_html)
-                self.assertEqual(2, menu_html.count("Coming soon"))
+                for module, href in (
+                    ("Orders", 'href="orders/"'),
+                    ("Customers", 'href="customers/"'),
+                    ("Shipments", 'href="shipments/"'),
+                ):
+                    self.assertNotIn(module, menu_html)
+                    self.assertNotIn(href, menu_html)
+                self.assertIn("Activity", menu_html)
+                self.assertNotIn('href="activity/"', menu_html)
+                self.assertEqual(1, menu_html.count("Coming soon"))
                 conn.close()
+
+                for path in ("/orders/", "/customers/", "/shipments/", "/activity/"):
+                    conn = HTTPConnection(host, port, timeout=3)
+                    conn.request("GET", path)
+                    response = conn.getresponse()
+                    response.read()
+                    self.assertEqual(404, response.status)
+                    conn.close()
 
                 conn = HTTPConnection(host, port, timeout=3)
                 conn.request("GET", "/items/")
@@ -383,6 +398,122 @@ class ItemExplorerTests(unittest.TestCase):
             self.assertEqual("2.5", item["quantity_per_piece"])
             self.assertEqual("12", item["quantity_per_bag"])
             self.assertEqual("3", item["pack_sequence"])
+
+    def test_backfill_fills_blank_canonical_usa_name_from_later_accepted_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first_source = root / "accepted-a.sqlite"
+            second_source = root / "accepted-b.sqlite"
+            for source in (first_source, second_source):
+                connection = sqlite3.connect(source)
+                connection.execute(
+                    'CREATE TABLE "MainDB__ITEM" ('
+                    '"Item ID" TEXT, "Description" TEXT, "Description TH" TEXT, "Type" TEXT, "Family" TEXT)'
+                )
+                connection.execute(
+                    'INSERT INTO "MainDB__ITEM" VALUES (?,?,?,?,?)',
+                    ("IT-LATER-USA", "Item", "ชื่อ", "Fish", "Family"),
+                )
+                if source == second_source:
+                    connection.execute(
+                        'CREATE TABLE "TempDB__ChangeName" ('
+                        '"Cust ID" TEXT, "Item ID" TEXT, "Declaration Name" TEXT)'
+                    )
+                    connection.execute(
+                        'INSERT INTO "TempDB__ChangeName" VALUES (?,?,?)',
+                        ("USA", "IT-LATER-USA", "Verified declaration"),
+                    )
+                connection.commit()
+                connection.close()
+
+            explorer = ItemExplorer(first_source, data_dir=root / "core-state")
+            explorer.backfill_from_snapshot()
+            self.assertEqual("", explorer.search("IT-LATER-USA")["items"][0]["usa_name"])
+            explorer.close()
+
+            explorer = ItemExplorer(second_source, data_dir=root / "core-state")
+            explorer.backfill_from_snapshot()
+            item = explorer.search("IT-LATER-USA")["items"][0]
+
+            self.assertEqual("Verified declaration", item["usa_name"])
+
+    def test_changename_only_backfills_unique_missing_names_and_quarantines_ambiguous_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "accepted.sqlite"
+            connection = sqlite3.connect(source)
+            connection.execute(
+                'CREATE TABLE "MainDB__ITEM" ('
+                '"Item ID" TEXT, "Description" TEXT, "Description TH" TEXT, "Type" TEXT, "Family" TEXT, "USA Name" TEXT)'
+            )
+            connection.executemany(
+                'INSERT INTO "MainDB__ITEM" VALUES (?,?,?,?,?,?)',
+                [
+                    ("IT-USA", "USA item", "ชื่อ", "Fish", "Family", ""),
+                    ("IT-OVERRIDE", "Override item", "ชื่อ", "Fish", "Family", ""),
+                    ("IT-CANONICAL", "Canonical item", "ชื่อ", "Fish", "Family", "Canonical USA name"),
+                    ("IT-DUP", "Duplicate item", "ชื่อ", "Fish", "Family", ""),
+                    ("IT-BLANK", "Blank item", "ชื่อ", "Fish", "Family", ""),
+                ],
+            )
+            connection.execute(
+                'CREATE TABLE "TempDB__ChangeName" ('
+                '"Cust ID" TEXT, "Item ID" TEXT, "Declaration Name" TEXT)'
+            )
+            connection.executemany(
+                'INSERT INTO "TempDB__ChangeName" VALUES (?,?,?)',
+                [
+                    (" uSa ", " it-usa ", "USA declaration"),
+                    ("OTHER", "IT-USA", "Other declaration"),
+                    ("USA", "IT-OVERRIDE", "Source declaration"),
+                    ("USA", "IT-CANONICAL", "Replacement declaration"),
+                    ("USA", "IT-DUP", "First declaration"),
+                    ("USA", "IT-DUP", "Second declaration"),
+                    ("USA", "IT-BLANK", "   "),
+                ],
+            )
+            connection.commit()
+            connection.close()
+            explorer = ItemExplorer(source, data_dir=root / "core-state")
+            explorer._local_store().save("IT-OVERRIDE", {"usa_name": "Core declaration"})
+
+            summary = explorer.backfill_from_snapshot()
+            items = {item["item_id"]: item for item in explorer.search(limit=20)["items"]}
+
+            self.assertEqual(5, summary["accepted"])
+            self.assertEqual("USA declaration", items["IT-USA"]["usa_name"])
+            self.assertEqual("Core declaration", items["IT-OVERRIDE"]["usa_name"])
+            self.assertEqual("Canonical USA name", items["IT-CANONICAL"]["usa_name"])
+            self.assertEqual("", items["IT-DUP"]["usa_name"])
+            self.assertEqual("", items["IT-BLANK"]["usa_name"])
+            self.assertCountEqual(
+                ["duplicate_usa_name_item_id", "blank_usa_name"],
+                explorer._local_store().quarantine_reasons(),
+            )
+
+    def test_malformed_changename_table_is_optional_and_does_not_block_item_import(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "accepted.sqlite"
+            connection = sqlite3.connect(source)
+            connection.execute(
+                'CREATE TABLE "MainDB__ITEM" ('
+                '"Item ID" TEXT, "Description" TEXT, "Description TH" TEXT, "Type" TEXT, "Family" TEXT)'
+            )
+            connection.execute(
+                'INSERT INTO "MainDB__ITEM" VALUES (?,?,?,?,?)',
+                ("IT-MALFORMED", "Item", "ชื่อ", "Fish", "Family"),
+            )
+            connection.execute('CREATE TABLE "TempDB__ChangeName" ("Item ID" TEXT, "Declaration Name" TEXT)')
+            connection.commit()
+            connection.close()
+
+            explorer = ItemExplorer(source, data_dir=root / "core-state")
+            self.assertEqual(1, explorer.backfill_from_snapshot()["accepted"])
+            item = explorer.search("IT-MALFORMED")["items"][0]
+
+            self.assertEqual("", item["usa_name"])
+            self.assertEqual([], explorer._local_store().quarantine_reasons())
 
     def test_backfill_joins_verified_vb6_phyto_and_packing_tables_for_unmaterialized_fields(self):
         with tempfile.TemporaryDirectory() as tmp:

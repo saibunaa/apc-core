@@ -76,6 +76,7 @@ class OrderExplorer:
             raise
 
     def _validate_schema(self) -> None:
+        self._order_item_columns: dict[str, str] = {}
         for table, required in _REQUIRED_COLUMNS.items():
             exists = self._connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
@@ -85,6 +86,16 @@ class OrderExplorer:
             columns = {str(row[1]) for row in self._connection.execute(f'PRAGMA table_info("{table}")')}
             if not set(required).issubset(columns):
                 raise ReadOnlySourceContractError(f"order explorer source lacks required {table} columns")
+            if table == "MainDB__ORDER_ITEM":
+                actual = {column.casefold(): column for column in columns}
+                self._order_item_columns = {
+                    field: actual.get(field.casefold(), "")
+                    for field in ("Description", "Description TH", "Description2", "Note", "Inv No", "SubCust")
+                }
+
+    def _order_item_field(self, field: str) -> str:
+        column = self._order_item_columns.get(field, "")
+        return f'oi."{column}"' if column else "NULL"
 
     @staticmethod
     def _hash_descriptor(descriptor: int) -> str:
@@ -165,8 +176,19 @@ class OrderExplorer:
             ).fetchone()
             if order is None:
                 return None
+            description_th = self._order_item_field("Description TH")
+            description = self._order_item_field("Description")
+            description_en = self._order_item_field("Description2")
+            note = self._order_item_field("Note")
+            inv_no = self._order_item_field("Inv No")
+            sub_cust = self._order_item_field("SubCust")
             rows = self._connection.execute(
-                'SELECT oi."Line No", oi."Item ID", item."Description", item."Description TH", oi."Qty" '
+                'SELECT oi."Line No", oi."Item ID", oi."Qty", '
+                f'CASE WHEN TRIM(COALESCE(oi."Item ID", \'\')) = \'\' AND TRIM(COALESCE({note}, \'\')) <> \'\' THEN {note} '
+                f'ELSE COALESCE(NULLIF({description_th}, \'\'), NULLIF({description}, \'\'), item."Description TH", \'\') END, '
+                f'COALESCE(NULLIF({inv_no}, \'\'), NULLIF({sub_cust}, \'\'), \'\'), '
+                f'COALESCE(NULLIF({description_en}, \'\'), item."Description", \'\'), '
+                f'CASE WHEN TRIM(COALESCE(oi."Item ID", \'\')) = \'\' AND TRIM(COALESCE({note}, \'\')) <> \'\' THEN 1 ELSE 0 END '
                 'FROM "MainDB__ORDER_ITEM" AS oi '
                 'LEFT JOIN "MainDB__ITEM" AS item ON item."Item ID" = oi."Item ID" '
                 'WHERE oi."Order No" = ? LIMIT ?',
@@ -176,9 +198,13 @@ class OrderExplorer:
             {
                 "line_no": _text(row[0]),
                 "item_id": _text(row[1]),
-                "item_description": _text(row[2]),
-                "item_description_th": _text(row[3]),
-                "qty": _text(row[4]),
+                "qty": _text(row[2]),
+                "description_th": _text(row[3]),
+                # The legacy save paths disagree on whether this is Inv No or
+                # SubCust. Preserve the visible value without claiming meaning.
+                "reference": _text(row[4]),
+                "description_en": _text(row[5]),
+                "is_annotation": bool(row[6]),
             }
             for row in rows
         ]
