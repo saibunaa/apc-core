@@ -54,7 +54,7 @@ class InvoiceDraftStore:
             "CREATE TABLE IF NOT EXISTS invoice_line_allocations ("
             "draft_id TEXT NOT NULL REFERENCES invoice_drafts(draft_id), order_id TEXT NOT NULL, order_line_no TEXT NOT NULL, line_no INTEGER NOT NULL, "
             "FOREIGN KEY(draft_id,line_no) REFERENCES invoice_draft_lines(draft_id,line_no), "
-            "UNIQUE(draft_id,order_id,order_line_no), UNIQUE(draft_id,line_no))"
+            "UNIQUE(order_id,order_line_no), UNIQUE(draft_id,line_no))"
         )
         self.connection.execute(
             "CREATE TABLE IF NOT EXISTS invoice_draft_conflicts ("
@@ -71,6 +71,37 @@ class InvoiceDraftStore:
             "CREATE TRIGGER IF NOT EXISTS invoice_drafts_snapshot_immutable "
             "BEFORE UPDATE OF accepted_snapshot_sha256 ON invoice_drafts "
             "BEGIN SELECT RAISE(ABORT,'immutable accepted snapshot'); END"
+        )
+        self.connection.execute(
+            "CREATE TRIGGER IF NOT EXISTS invoice_drafts_submission_immutable "
+            "BEFORE UPDATE OF submission_json,idempotency_key,created_by,created_at ON invoice_drafts "
+            "BEGIN SELECT RAISE(ABORT,'immutable draft submission'); END"
+        )
+        self.connection.execute(
+            "CREATE TRIGGER IF NOT EXISTS invoice_draft_lines_no_insert_after_audit "
+            "BEFORE INSERT ON invoice_draft_lines WHEN EXISTS(SELECT 1 FROM invoice_draft_audit WHERE draft_id=NEW.draft_id) "
+            "BEGIN SELECT RAISE(ABORT,'sealed draft lines'); END"
+        )
+        self.connection.execute(
+            "CREATE TRIGGER IF NOT EXISTS invoice_draft_lines_no_update "
+            "BEFORE UPDATE ON invoice_draft_lines BEGIN SELECT RAISE(ABORT,'immutable draft lines'); END"
+        )
+        self.connection.execute(
+            "CREATE TRIGGER IF NOT EXISTS invoice_draft_lines_no_delete "
+            "BEFORE DELETE ON invoice_draft_lines BEGIN SELECT RAISE(ABORT,'immutable draft lines'); END"
+        )
+        self.connection.execute(
+            "CREATE TRIGGER IF NOT EXISTS invoice_line_allocations_no_insert_after_audit "
+            "BEFORE INSERT ON invoice_line_allocations WHEN EXISTS(SELECT 1 FROM invoice_draft_audit WHERE draft_id=NEW.draft_id) "
+            "BEGIN SELECT RAISE(ABORT,'sealed draft allocations'); END"
+        )
+        self.connection.execute(
+            "CREATE TRIGGER IF NOT EXISTS invoice_line_allocations_no_update "
+            "BEFORE UPDATE ON invoice_line_allocations BEGIN SELECT RAISE(ABORT,'immutable draft allocations'); END"
+        )
+        self.connection.execute(
+            "CREATE TRIGGER IF NOT EXISTS invoice_line_allocations_no_delete "
+            "BEFORE DELETE ON invoice_line_allocations BEGIN SELECT RAISE(ABORT,'immutable draft allocations'); END"
         )
         self.connection.execute(
             "CREATE TRIGGER IF NOT EXISTS invoice_draft_audit_no_update "
@@ -90,7 +121,7 @@ class InvoiceDraftStore:
                 ("check(length(accepted_snapshot_sha256)=64andaccepted_snapshot_sha256notglob'*[^0123456789abcdef]*')", "draft_idtextnotnullprimarykey", "check(statusin('draft','review','conflicted'))", "idempotency_keytextnotnullunique"),
             ),
             "invoice_draft_lines": (("draft_id", "line_no", "item_id", "quantity"), ("referencesinvoice_drafts(draft_id)", "primarykey(draft_id,line_no)")),
-            "invoice_line_allocations": (("draft_id", "order_id", "order_line_no", "line_no"), ("referencesinvoice_drafts(draft_id)", "foreignkey(draft_id,line_no)referencesinvoice_draft_lines(draft_id,line_no)", "unique(draft_id,order_id,order_line_no)", "unique(draft_id,line_no)")),
+            "invoice_line_allocations": (("draft_id", "order_id", "order_line_no", "line_no"), ("referencesinvoice_drafts(draft_id)", "foreignkey(draft_id,line_no)referencesinvoice_draft_lines(draft_id,line_no)", "unique(order_id,order_line_no)", "unique(draft_id,line_no)")),
             "invoice_draft_conflicts": (("conflict_id", "draft_id", "reason", "created_by", "created_at", "resolution", "resolved_by", "resolved_at"), ("conflict_idtextnotnullprimarykey", "referencesinvoice_drafts(draft_id)",)),
             "invoice_draft_audit": (("audit_id", "draft_id", "action", "actor", "details_json", "created_at"), ("audit_idintegerprimarykeyautoincrement", "referencesinvoice_drafts(draft_id)")),
         }
@@ -102,6 +133,13 @@ class InvoiceDraftStore:
                 raise ValueError("incompatible invoice draft schema")
         triggers = {
             "invoice_drafts_snapshot_immutable": "beforeupdateofaccepted_snapshot_sha256oninvoice_draftsbeginselectraise(abort,'immutableacceptedsnapshot');end",
+            "invoice_drafts_submission_immutable": "beforeupdateofsubmission_json,idempotency_key,created_by,created_atoninvoice_draftsbeginselectraise(abort,'immutabledraftsubmission');end",
+            "invoice_draft_lines_no_insert_after_audit": "beforeinsertoninvoice_draft_lineswhenexists(select1frominvoice_draft_auditwheredraft_id=new.draft_id)beginselectraise(abort,'sealeddraftlines');end",
+            "invoice_draft_lines_no_update": "beforeupdateoninvoice_draft_linesbeginselectraise(abort,'immutabledraftlines');end",
+            "invoice_draft_lines_no_delete": "beforedeleteoninvoice_draft_linesbeginselectraise(abort,'immutabledraftlines');end",
+            "invoice_line_allocations_no_insert_after_audit": "beforeinsertoninvoice_line_allocationswhenexists(select1frominvoice_draft_auditwheredraft_id=new.draft_id)beginselectraise(abort,'sealeddraftallocations');end",
+            "invoice_line_allocations_no_update": "beforeupdateoninvoice_line_allocationsbeginselectraise(abort,'immutabledraftallocations');end",
+            "invoice_line_allocations_no_delete": "beforedeleteoninvoice_line_allocationsbeginselectraise(abort,'immutabledraftallocations');end",
             "invoice_draft_audit_no_update": "beforeupdateoninvoice_draft_auditbeginselectraise(abort,'append-onlyaudit');end",
             "invoice_draft_audit_no_delete": "beforedeleteoninvoice_draft_auditbeginselectraise(abort,'append-onlyaudit');end",
         }
@@ -148,7 +186,7 @@ class InvoiceDraftStore:
             ensure_ascii=False,
         )
 
-    def _audit(self, draft_id: str, action: str, actor: str, details: dict[str, str]) -> int:
+    def _audit(self, draft_id: str, action: str, actor: str, details: dict[str, object]) -> int:
         cursor = self.connection.execute(
             "INSERT INTO invoice_draft_audit(draft_id,action,actor,details_json) VALUES (?,?,?,?)",
             (draft_id, action, actor, json.dumps(details, sort_keys=True, separators=(",", ":"))),
@@ -210,6 +248,101 @@ class InvoiceDraftStore:
                 )
             self._audit(draft_id, "created", creator, {"status": "draft"})
             self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+        return self._draft(draft_id) or {}
+
+    @_locked
+    def create_converter_draft(
+        self,
+        accepted_snapshot_sha256: object,
+        actor: object,
+        idempotency_key: object,
+        frozen_lines: object,
+        annotations: object,
+        customer_id: object,
+        document_family: object,
+        selected_order_ids: object,
+        conflict_decisions: object,
+    ) -> dict[str, object]:
+        """Persist a service-validated frozen preview in the existing local transaction."""
+        snapshot = self._snapshot_sha256(accepted_snapshot_sha256)
+        creator = self._text(actor, "actor")
+        key = self._text(idempotency_key, "idempotency key")
+        customer = self._text(customer_id, "customer")
+        family = self._text(document_family, "document family")
+        if type(frozen_lines) is not tuple or type(annotations) is not tuple or type(selected_order_ids) is not tuple or type(conflict_decisions) is not tuple:
+            raise ValueError("invalid converter proposal")
+        lines = [dict(line) for line in frozen_lines]
+        allocations = [
+            {
+                "order_id": self._text(line.get("order_id"), "line"),
+                "order_line_no": self._text(line.get("line_ref"), "line"),
+                "item_id": self._text(line.get("item_id"), "line"),
+                "quantity": self._text(line.get("quantity"), "line"),
+            }
+            for line in lines
+        ]
+        if not allocations:
+            raise ValueError("invalid lines")
+        payload = {
+            "accepted_snapshot_sha256": snapshot,
+            "created_by": creator,
+            "idempotency_key": key,
+            "customer_id": customer,
+            "document_family": family,
+            "selected_order_ids": list(selected_order_ids),
+            "lines": lines,
+            "annotations": list(annotations),
+            "decisions": list(conflict_decisions),
+        }
+        submission = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        try:
+            self.connection.execute("BEGIN IMMEDIATE")
+            existing = self.connection.execute(
+                "SELECT draft_id,submission_json FROM invoice_drafts WHERE idempotency_key=?", (key,)
+            ).fetchone()
+            if existing is not None:
+                if existing[1] != submission:
+                    raise ValueError("idempotency key mismatch")
+                self.connection.commit()
+                return self._draft(existing[0]) or {}
+            draft_id = str(uuid.uuid4())
+            self.connection.execute(
+                "INSERT INTO invoice_drafts(draft_id,accepted_snapshot_sha256,created_by,status,idempotency_key,submission_json) "
+                "VALUES (?,?,?,'draft',?,?)", (draft_id, snapshot, creator, key, submission),
+            )
+            for line_no, line in enumerate(allocations, 1):
+                self.connection.execute(
+                    "INSERT INTO invoice_draft_lines(draft_id,line_no,item_id,quantity) VALUES (?,?,?,?)",
+                    (draft_id, line_no, line["item_id"], line["quantity"]),
+                )
+                self.connection.execute(
+                    "INSERT INTO invoice_line_allocations(draft_id,order_id,order_line_no,line_no) VALUES (?,?,?,?)",
+                    (draft_id, line["order_id"], line["order_line_no"], line_no),
+                )
+            self._audit(
+                draft_id,
+                "converter_draft_created",
+                creator,
+                {
+                    "actor": creator,
+                    "accepted_snapshot_sha256": snapshot,
+                    "customer_id": customer,
+                    "document_family": family,
+                    "selected_order_ids": list(selected_order_ids),
+                    "annotations": list(annotations),
+                    "conflict_decisions": list(conflict_decisions),
+                    "idempotency_key": key,
+                },
+            )
+            self.connection.commit()
+        except sqlite3.IntegrityError as error:
+            self.connection.rollback()
+            if "invoice_line_allocations" in str(error):
+                raise ValueError("allocation already held by active draft") from None
+            raise
         except Exception:
             self.connection.rollback()
             raise
