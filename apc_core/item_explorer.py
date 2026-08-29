@@ -96,6 +96,11 @@ def _number_text(value: object) -> str:
         return text
 
 
+def _normalized_source_item_id(value: object) -> str:
+    """Match copied legacy IDs without preserving incidental casing/space drift."""
+    return display_text(value).strip().casefold()
+
+
 class CoreStore:
     """App-owned local overrides and append-only audit; it never opens the source snapshot."""
 
@@ -222,6 +227,18 @@ class CoreStore:
             )
             self.connection.execute("UPDATE core_items SET imported_at = CURRENT_TIMESTAMP WHERE item_id = ?", (item["item_id"],))
         return True
+
+    def backfill_canonical_usa_name(self, item_id: str, usa_name: str) -> bool:
+        """Fill a verified USA name only when the imported canonical field remains blank."""
+        if not usa_name or self.override_for(item_id).get("usa_name"):
+            return False
+        with self.connection:
+            cursor = self.connection.execute(
+                "UPDATE core_items SET usa_name = ?, updated_at = CURRENT_TIMESTAMP "
+                "WHERE item_id = ? AND core_created = 0 AND trim(coalesce(usa_name, '')) = ''",
+                (usa_name, item_id),
+            )
+        return cursor.rowcount == 1
 
     def create_canonical(self, item: dict[str, str], actor_username: str) -> dict[str, object]:
         if self.canonical_for(item["item_id"]) is not None:
@@ -397,6 +414,47 @@ class ItemExplorer:
                     values.setdefault(item_id, {}).update(dict(zip(selected, row[1:])))
         return values, conflicts
 
+    def _usa_name_values(self) -> tuple[dict[str, str], dict[str, str]]:
+        """Read only the verified TempDB ChangeName USA-declaration companion table.
+
+        A missing or malformed optional table has no USA-name source. Ambiguous or
+        blank USA rows are kept out of field import and quarantined separately,
+        while the base Item remains eligible for Core adoption.
+        """
+        table = "TempDB__ChangeName"
+        with self._lock:
+            present = self._connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+            ).fetchone()
+            if present is None:
+                return {}, {}
+            columns = {row[1].casefold(): row[1] for row in self._connection.execute(f'PRAGMA table_info("{table}")')}
+            required = {name: columns.get(name.casefold()) for name in ("Cust ID", "Item ID", "Declaration Name")}
+            if any(column is None for column in required.values()):
+                return {}, {}
+            select_clause = ", ".join('"' + str(required[name]) + '"' for name in ("Cust ID", "Item ID", "Declaration Name"))
+            rows = self._connection.execute(f'SELECT {select_clause} FROM "{table}"').fetchall()
+        values: dict[str, str] = {}
+        issues: dict[str, str] = {}
+        seen: set[str] = set()
+        for customer_id, item_id, declaration_name in rows:
+            if display_text(customer_id).strip().casefold() != "usa":
+                continue
+            item_key = _normalized_source_item_id(item_id)
+            if not item_key:
+                continue
+            if item_key in seen:
+                values.pop(item_key, None)
+                issues[item_key] = "duplicate_usa_name_item_id"
+                continue
+            seen.add(item_key)
+            value = display_text(declaration_name).strip()
+            if value:
+                values[item_key] = value
+            else:
+                issues[item_key] = "blank_usa_name"
+        return values, issues
+
     def _baseline_items(self) -> list[dict[str, str]]:
         source_by_casefold = {column.casefold(): column for column in self._source_columns}
         available = {
@@ -410,15 +468,21 @@ class ItemExplorer:
         with self._lock:
             rows = self._connection.execute(f'SELECT {selected} FROM "MainDB__ITEM" ORDER BY "Item ID"').fetchall()
         auxiliary_values, auxiliary_conflicts = self._auxiliary_item_values()
+        usa_name_values, usa_name_issues = self._usa_name_values()
         items = []
         for row in rows:
             values = dict(zip(available, row))
             item = {"item_id": display_text(values["item_id"])}
+            source_item_key = _normalized_source_item_id(item["item_id"])
             for field in EDITABLE_FIELDS:
                 value = values.get(field, "")
                 item[field] = _number_text(value) if field in _DECIMAL_FIELDS | _INTEGER_FIELDS else display_text(value)
             for field, value in auxiliary_values.get(item["item_id"], {}).items():
                 item[field] = _number_text(value) if field in _DECIMAL_FIELDS | _INTEGER_FIELDS else display_text(value)
+            if source_item_key in usa_name_values and not item["usa_name"].strip():
+                item["usa_name"] = usa_name_values[source_item_key]
+            if source_item_key in usa_name_issues:
+                item["_usa_name_issue"] = usa_name_issues[source_item_key]
             if item["item_id"] in auxiliary_conflicts:
                 item["_auxiliary_conflict"] = "duplicate_auxiliary_item_id"
             item["family"] = item["phyto_family"]
@@ -631,6 +695,10 @@ class ItemExplorer:
                             if row[field] and field in store.override_for(item_id) and store.override_for(item_id)[field] != row[field]
                         )
                     store.import_canonical(row, artifact_path=str(self.source_path), artifact_sha256=self._source_sha256)
+                    if row.get("usa_name") and "_usa_name_issue" not in row:
+                        store.backfill_canonical_usa_name(item_id, row["usa_name"])
+                    if "_usa_name_issue" in row:
+                        store.quarantine(item_id, row["_usa_name_issue"])
                     counts["accepted"] += 1
         for item_id in sorted(store.override_ids() - source_item_ids):
             store.quarantine(item_id, "unmatched_override")
