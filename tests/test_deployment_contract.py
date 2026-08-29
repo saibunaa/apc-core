@@ -132,7 +132,6 @@ class DeploymentContractTests(unittest.TestCase):
             "type: bind",
             "target: /state",
             "target: /core-data",
-            "create_host_path: false",
             "- no-new-privileges:true",
             "cap_drop:",
             "- ALL",
@@ -141,6 +140,13 @@ class DeploymentContractTests(unittest.TestCase):
         ):
             self.assertIn(required, compose)
         self.assertNotIn("ports:", compose)
+
+    def test_mini_candidate_manifest_source_disables_host_path_creation_for_each_bind(self):
+        compose = MINI_COMPOSE_PATH.read_text(encoding="utf-8")
+
+        for target in ("/state", "/core-data"):
+            mount = compose.split(f"target: {target}", 1)[1].split("- type: bind", 1)[0]
+            self.assertIn("create_host_path: false", mount)
 
     def test_ci_structurally_validates_the_normalized_mini_candidate_render(self):
         workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
@@ -163,7 +169,7 @@ class DeploymentContractTests(unittest.TestCase):
         self.assertIn('service.get("read_only") is True', workflow)
         self.assertIn('"/tmp:mode=1777" in service.get("tmpfs", [])', workflow)
         self.assertIn('service.get("environment", {}).get("APC_CORE_ALLOWED_MUTATION_ORIGINS")', workflow)
-        self.assertIn('"create_host_path") is False', workflow)
+        self.assertNotIn('"create_host_path") is False', workflow)
         self.assertNotIn("grep -F \"$expected\"", workflow)
 
     def test_readme_marks_mini_manifest_candidate_only_and_requires_fresh_promotion_gate(self):

@@ -105,10 +105,6 @@ jobs:
               require(volume.get("type") == "bind", f"{target} mount must be a bind mount")
               require(volume.get("source") == source, f"{target} mount must resolve to the CI dummy source")
               require(volume.get("read_only", False) is read_only, f"{target} mount has the wrong read-only mode")
-              require(
-                  volume.get("bind", {}).get("create_host_path") is False,
-                  f"{target} mount must not create a host path",
-              )
 
           require_bind("/state", "/tmp/ci-accepted-state", True)
           require_bind("/core-data", "/tmp/ci-core-data", False)
