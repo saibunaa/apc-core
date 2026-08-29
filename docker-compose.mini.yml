@@ -1,0 +1,36 @@
+# Mini candidate manifest. All deployment-specific values are intentionally external.
+services:
+  apc-core:
+    image: "apc-core:${APC_CORE_IMAGE_TAG:?set APC_CORE_IMAGE_TAG}"
+    container_name: "${APC_CORE_CONTAINER_NAME:?set APC_CORE_CONTAINER_NAME}"
+    user: "1000:1000"
+    restart: "${APC_CORE_CANDIDATE_RESTART_POLICY:-no}"
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    volumes:
+      - type: bind
+        source: "${APC_CORE_ACCEPTED_STATE_DIR:?set APC_CORE_ACCEPTED_STATE_DIR}"
+        target: /state
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${APC_CORE_DATA_DIR:?set APC_CORE_DATA_DIR}"
+        target: /core-data
+        bind:
+          create_host_path: false
+    environment:
+      APC_CORE_ARTIFACT_ROOT: /state
+      APC_CORE_DATA_DIR: /core-data
+      APC_CORE_ALLOWED_MUTATION_ORIGINS: "${APC_CORE_ALLOWED_MUTATION_ORIGINS:?set APC_CORE_ALLOWED_MUTATION_ORIGINS}"
+    networks:
+      - mini-private
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+networks:
+  mini-private:
+    name: "${APC_CORE_DOCKER_NETWORK:-mini-host}"
+    external: true
