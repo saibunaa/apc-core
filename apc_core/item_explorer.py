@@ -1069,6 +1069,9 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                 except (ValueError, sqlite3.Error):
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid customer query"})
                 return
+            if invoice_available and (parsed.path == "/invoices" or parsed.path.startswith("/invoices/")) and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
+                self._send_json(HTTPStatus.FORBIDDEN, {"error": "invoice access is loopback-only unless customer LAN ingress is enabled"})
+                return
             if invoice_available and parsed.path == "/invoices":
                 self.send_response(HTTPStatus.PERMANENT_REDIRECT)
                 self.send_header("Location", "invoices/")
@@ -1077,9 +1080,6 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                 return
             if invoice_available and parsed.path == "/invoices/":
                 self._send_html(HTTPStatus.OK, _staff_identity_shell(invoice_page))
-                return
-            if invoice_available and parsed.path.startswith("/invoices/") and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
-                self._send_json(HTTPStatus.FORBIDDEN, {"error": "invoice access is loopback-only unless customer LAN ingress is enabled"})
                 return
             if invoice_available and parsed.path == "/invoices/api/candidates":
                 try:

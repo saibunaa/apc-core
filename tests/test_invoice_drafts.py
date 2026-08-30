@@ -167,6 +167,22 @@ class TestInvoiceDraftsContract(unittest.TestCase):
                 InvoiceDraftStore(root / "state")
             self.assertTrue(source.is_file())
 
+    def test_incompatible_existing_schema_is_rejected_without_partial_local_schema_changes(self):
+        from apc_core.invoice_drafts import InvoiceDraftStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state"
+            state.mkdir()
+            path = state / "apc_core.sqlite"
+            connection = sqlite3.connect(path)
+            connection.execute("CREATE TABLE invoice_drafts (draft_id TEXT PRIMARY KEY)")
+            connection.commit()
+            connection.close()
+            before = path.read_bytes()
+            with self.assertRaisesRegex(ValueError, "incompatible invoice draft schema"):
+                InvoiceDraftStore(state)
+            self.assertEqual(before, path.read_bytes())
+
     def test_existing_schema_with_weakened_audit_table_is_rejected(self):
         from apc_core.invoice_drafts import InvoiceDraftStore
 

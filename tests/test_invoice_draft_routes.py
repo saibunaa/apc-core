@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import sqlite3
 import tempfile
@@ -94,6 +95,35 @@ class TestInvoiceDraftRoutes(unittest.TestCase):
             self.assertNotIn("selected_order_ids", payload)
             self.assertEqual(before_source, hashlib.sha256(source.read_bytes()).hexdigest())
             self.assertEqual(before_state, hashlib.sha256(state.read_bytes()).hexdigest())
+
+    def test_invoice_page_and_api_are_denied_before_rendering_for_nonpermitted_clients(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = self.fixture(root)
+            explorer = ItemExplorer(source, data_dir=root / "core-state")
+            self.addCleanup(explorer.close)
+            invoice_source = InvoiceConversionSource(source)
+            service = InvoiceDraftService(InvoiceDraftStore(root / "core-state"))
+            self.addCleanup(invoice_source.close)
+            self.addCleanup(service.store.close)
+            handler_class = make_handler(
+                explorer,
+                {"accepted": True},
+                invoice_source=invoice_source,
+                invoice_draft_service=service,
+                accepted_snapshot_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+            )
+            for path in ("/invoices/", "/invoices/api/candidates?customer_id=C-1&shipment_date=2026-08-02"):
+                denied = object.__new__(handler_class)
+                denied.client_address = ("100.69.141.75", 1)
+                denied.path = path
+                denied.wfile = io.BytesIO()
+                statuses = []
+                denied.send_response = statuses.append
+                denied.send_header = lambda *_: None
+                denied.end_headers = lambda: None
+                handler_class.do_GET(denied)
+                self.assertEqual([403], statuses)
 
     def test_preview_is_post_only_explicit_selection_and_raw_proposal_cannot_save(self):
         with tempfile.TemporaryDirectory() as temporary:

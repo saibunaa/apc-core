@@ -37,6 +37,7 @@ class InvoiceDraftStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(self.path, check_same_thread=False)
         self.connection.execute("PRAGMA foreign_keys=ON")
+        self.connection.execute("BEGIN IMMEDIATE")
         self.connection.execute(
             "CREATE TABLE IF NOT EXISTS invoice_drafts ("
             "draft_id TEXT NOT NULL PRIMARY KEY, accepted_snapshot_sha256 TEXT NOT NULL "
@@ -111,7 +112,12 @@ class InvoiceDraftStore:
             "CREATE TRIGGER IF NOT EXISTS invoice_draft_audit_no_delete "
             "BEFORE DELETE ON invoice_draft_audit BEGIN SELECT RAISE(ABORT,'append-only audit'); END"
         )
-        self._validate_schema()
+        try:
+            self._validate_schema()
+        except BaseException:
+            self.connection.rollback()
+            self.connection.close()
+            raise
         self.connection.commit()
 
     def _validate_schema(self) -> None:
