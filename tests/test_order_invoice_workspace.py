@@ -406,3 +406,20 @@ class TestOrderInvoiceWorkspaceContract(unittest.TestCase):
         self.assertIn("dataset.lineRef", ui_source)
         self.assertNotIn("source_sha256", ui_source)
         self.assertNotIn("packing", ui_source.casefold())
+
+    def test_source_line_reference_rejects_duplicate_exact_coordinate_within_one_pinned_document(self):
+        from apc_core.order_invoice_workspace import map_source_order
+
+        with self.assertRaisesRegex(ValueError, "duplicate source line id"):
+            map_source_order(
+                {
+                    "order_id": "ORD/2026/001",
+                    "customer_id": "C/001",
+                    "customer_name": "Customer One",
+                    "lines": [
+                        {"line_no": "007", "item_id": "ITEM-A", "qty": "2", "sub_customer": "A1"},
+                        {"line_no": "007", "item_id": "ITEM-A", "qty": "2", "sub_customer": "A1"},
+                    ],
+                },
+                source_sha256="a" * 64,
+            )

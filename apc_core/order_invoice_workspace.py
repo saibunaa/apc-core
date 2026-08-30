@@ -122,7 +122,7 @@ def _source_line_references(
     source_sha256: str,
 ) -> tuple[SourceLineReference, ...]:
     """Freeze exact source coordinates without creating a packing plan or write path."""
-    return tuple(
+    references = tuple(
         SourceLineReference(
             source_type,
             document_id,
@@ -131,6 +131,9 @@ def _source_line_references(
         )
         for line in line_page
     )
+    if len({reference.line_id for reference in references}) != len(references):
+        raise ValueError("duplicate source line id")
+    return references
 
 
 def map_source_order(order: object, *, source_sha256: object) -> SourceRenderDTO:
