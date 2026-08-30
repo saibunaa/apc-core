@@ -405,7 +405,8 @@ class TestOrderInvoiceWorkspaceContract(unittest.TestCase):
         self.assertIn("sourceLineReference", ui_source)
         self.assertIn("dataset.lineRef", ui_source)
         self.assertNotIn("source_sha256", ui_source)
-        self.assertNotIn("packing", ui_source.casefold())
+        self.assertIn("from apc_core.packing_drawer_ui import packing_drawer_html", ui_source)
+        self.assertNotIn("packing_persistence", ui_source)
 
     def test_source_line_reference_rejects_duplicate_exact_coordinate_within_one_pinned_document(self):
         from apc_core.order_invoice_workspace import map_source_order
