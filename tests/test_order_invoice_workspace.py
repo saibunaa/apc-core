@@ -285,7 +285,7 @@ class TestOrderInvoiceWorkspaceContract(unittest.TestCase):
             raise AssertionError("core draft mapper must reject source provenance")
 
         dto = map_source_order(
-            {"order_id": "ORD", "customer_id": "C", "customer_name": "Name", "lines": [{"item_id": "I"}]},
+            {"order_id": "ORD", "customer_id": "C", "customer_name": "Name", "lines": [{"line_no": "1", "item_id": "I"}]},
             source_sha256="c" * 64,
         )
         try:
@@ -344,3 +344,65 @@ class TestOrderInvoiceWorkspaceContract(unittest.TestCase):
                     self.assertEqual(line_count - last_offset, len(last["lines"]))
                     self.assertIsNone(last["next_offset"])
                 explorer.close()
+
+    def test_source_line_references_are_immutable_exact_source_coordinates(self):
+        source_path = Path(__file__).parents[1] / "apc_core" / "order_invoice_workspace.py"
+        self.assertIn("class SourceLineReference", source_path.read_text(encoding="utf-8"))
+        from apc_core.order_invoice_workspace import (
+            SourceLineReference,
+            map_source_invoice,
+            map_source_order,
+        )
+
+        order = map_source_order(
+            {
+                "order_id": "ORD/2026/001",
+                "customer_id": "C/001",
+                "customer_name": "Customer One",
+                "lines": [{"line_no": "007", "item_id": "ITEM-7", "qty": "2"}],
+            },
+            source_sha256="a" * 64,
+        )
+        invoice = map_source_invoice(
+            {
+                "invoice_id": "INV///2026/001",
+                "header": {"customer_id": "C/002", "customer_name": "Customer Two"},
+                "lines": [{"line_no": "004", "item_id": "ITEM-4", "qty": "3"}],
+                "total": 1,
+                "next_offset": None,
+            },
+            source_sha256="b" * 64,
+        )
+
+        self.assertEqual(
+            (SourceLineReference("source_order", "ORD/2026/001", "007", "a" * 64),),
+            order.line_references,
+        )
+        self.assertEqual(
+            (SourceLineReference("source_invoice", "INV///2026/001", "004", "b" * 64),),
+            invoice.line_references,
+        )
+        self.assertTrue(all(reference.read_only is True for reference in order.line_references + invoice.line_references))
+        with self.assertRaises(FrozenInstanceError):
+            order.line_references[0].line_id = "changed"
+        self.assertFalse(hasattr(map_source_order({"order_id": "ORD/1", "customer_id": "C", "customer_name": "N", "lines": []}, source_sha256="c" * 64), "packing"))
+
+    def test_source_lines_without_an_exact_line_id_are_rejected_and_ui_only_presents_safe_coordinates(self):
+        from apc_core.order_invoice_workspace import map_source_order
+
+        with self.assertRaises(ValueError):
+            map_source_order(
+                {
+                    "order_id": "ORD/2026/001",
+                    "customer_id": "C/001",
+                    "customer_name": "Customer One",
+                    "lines": [{"item_id": "ITEM-7"}],
+                },
+                source_sha256="a" * 64,
+            )
+
+        ui_source = (Path(__file__).parents[1] / "apc_core" / "order_invoice_ui.py").read_text(encoding="utf-8")
+        self.assertIn("sourceLineReference", ui_source)
+        self.assertIn("dataset.lineRef", ui_source)
+        self.assertNotIn("source_sha256", ui_source)
+        self.assertNotIn("packing", ui_source.casefold())

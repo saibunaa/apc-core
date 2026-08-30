@@ -36,6 +36,17 @@ def _reject_keys_anywhere(value: object, forbidden_keys: frozenset[str], label: 
 
 
 @dataclass(frozen=True, slots=True)
+class SourceLineReference:
+    """Immutable source coordinate reserved for later Core-local planning."""
+
+    source_type: str
+    document_id: str
+    line_id: str
+    source_sha256: str
+    read_only: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class SourceRenderDTO:
     record_type: str
     record_id: str
@@ -45,6 +56,7 @@ class SourceRenderDTO:
     line_page: tuple[tuple[tuple[str, object], ...], ...]
     line_total: int
     next_offset: int | None
+    line_references: tuple[SourceLineReference, ...]
     read_only: bool
 
 
@@ -103,6 +115,24 @@ def _page_number(value: object, label: str, *, allow_none: bool) -> int | None:
     return value
 
 
+def _source_line_references(
+    source_type: str,
+    document_id: str,
+    line_page: tuple[tuple[tuple[str, object], ...], ...],
+    source_sha256: str,
+) -> tuple[SourceLineReference, ...]:
+    """Freeze exact source coordinates without creating a packing plan or write path."""
+    return tuple(
+        SourceLineReference(
+            source_type,
+            document_id,
+            _text(dict(line).get("line_no"), "source line id"),
+            source_sha256,
+        )
+        for line in line_page
+    )
+
+
 def map_source_order(order: object, *, source_sha256: object) -> SourceRenderDTO:
     """Map one independently-read source order without adding any action surface."""
     _reject_keys_anywhere(order, _MUTATION_CONTROL_KEYS, "source data cannot carry mutation controls")
@@ -116,15 +146,17 @@ def map_source_order(order: object, *, source_sha256: object) -> SourceRenderDTO
     next_offset = _page_number(order.get("next_offset"), "next offset", allow_none=True)
     if total is None or total < len(lines):
         raise ValueError("invalid line total")
+    snapshot_hash = _source_sha256(source_sha256)
     return SourceRenderDTO(
         record_type="source_order",
         record_id=f"source_order:{order_id}",
-        source_sha256=_source_sha256(source_sha256),
+        source_sha256=snapshot_hash,
         customer_id=customer_id,
         customer_name=customer_name,
         line_page=lines,
         line_total=total,
         next_offset=next_offset,
+        line_references=_source_line_references("source_order", order_id, lines, snapshot_hash),
         read_only=True,
     )
 
@@ -163,15 +195,17 @@ def map_source_invoice(invoice: object, *, source_sha256: object = None) -> Sour
     next_offset = _page_number(invoice.get("next_offset"), "next offset", allow_none=True)
     if total < len(lines):
         raise ValueError("invalid line total")
+    snapshot_hash = _source_sha256(source_sha256)
     return SourceRenderDTO(
         record_type="source_invoice",
         record_id=f"source_invoice:{invoice_id}",
-        source_sha256=_source_sha256(source_sha256),
+        source_sha256=snapshot_hash,
         customer_id=customer_id,
         customer_name=customer_name,
         line_page=lines,
         line_total=total,
         next_offset=next_offset,
+        line_references=_source_line_references("source_invoice", invoice_id, lines, snapshot_hash),
         read_only=True,
     )
 
