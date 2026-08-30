@@ -169,6 +169,35 @@ class OrderExplorer:
             "orders": orders,
         }
 
+    def browse_orders(self, query: object, *, limit: object = 50, offset: object = 0) -> dict[str, object]:
+        """Return a prefix-bounded source-order list without joining another source set."""
+        page_limit, page_offset = self._page(limit, offset)
+        if type(query) is not str or not query:
+            raise ValueError("invalid order browse query")
+        prefix = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        where = ' WHERE o."Order No" LIKE ? ESCAPE \'\\\''
+        with self._lock:
+            total = int(self._connection.execute(
+                'SELECT COUNT(*) FROM "MainDB__ORDER" AS o' + where, (prefix,)
+            ).fetchone()[0])
+            rows = self._connection.execute(
+                'SELECT o."Order No", o."Order Date", o."Cust ID" FROM "MainDB__ORDER" AS o' + where
+                + ' ORDER BY o."Order Date" DESC, o."Order No" LIMIT ? OFFSET ?',
+                (prefix, page_limit, page_offset),
+            ).fetchall()
+        next_offset = page_offset + page_limit
+        return {
+            "total": total,
+            "limit": page_limit,
+            "offset": page_offset,
+            "has_more": next_offset < total,
+            "next_offset": next_offset if next_offset < total else None,
+            "orders": [
+                {"order_id": _text(row[0]), "order_date": _text(row[1]), "customer_id": _text(row[2])}
+                for row in rows
+            ],
+        }
+
     def open_order(self, order_id: object) -> dict[str, object] | None:
         if type(order_id) is not str:
             return None

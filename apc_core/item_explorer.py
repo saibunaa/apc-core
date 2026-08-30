@@ -347,6 +347,7 @@ class ItemExplorer:
         self.source_path = Path(source_path)
         self.data_dir = Path(data_dir or os.environ.get("APC_CORE_DATA_DIR", "state"))
         self._store: CoreStore | None = None
+        self._source_invoice_explorer = None
         descriptor = os.open(self.source_path, os.O_RDONLY | os.O_NOFOLLOW)
         try:
             self._initialize_from_descriptor(descriptor)
@@ -357,6 +358,7 @@ class ItemExplorer:
     def from_open_descriptor(cls, descriptor: int, source_path: Path, data_dir: Path | None = None) -> "ItemExplorer":
         explorer = cls.__new__(cls)
         explorer.source_path, explorer.data_dir, explorer._store = Path(source_path), Path(data_dir or os.environ.get("APC_CORE_DATA_DIR", "state")), None
+        explorer._source_invoice_explorer = None
         explorer._initialize_from_descriptor(descriptor)
         return explorer
 
@@ -387,9 +389,25 @@ class ItemExplorer:
 
     def close(self) -> None:
         with self._lock:
-            self._connection.close()
-            if self._store is not None:
-                self._store.close()
+            try:
+                self._connection.close()
+                if self._store is not None:
+                    self._store.close()
+            finally:
+                if self._source_invoice_explorer is not None:
+                    self._source_invoice_explorer.close()
+                    self._source_invoice_explorer = None
+
+    def attach_source_invoice_explorer(self, reader) -> None:
+        """Transfer ownership of one accepted-descriptor invoice reader to this explorer."""
+        if self._source_invoice_explorer is not None:
+            raise ValueError("source invoice explorer is already attached")
+        self._source_invoice_explorer = reader
+
+    @property
+    def source_invoice_explorer(self):
+        """Optional accepted descriptor-pinned reader owned by this lifecycle."""
+        return self._source_invoice_explorer
 
     def _auxiliary_item_values(self) -> tuple[dict[str, dict[str, object]], set[str]]:
         values: dict[str, dict[str, object]] = {}
@@ -857,7 +875,7 @@ def _order_explorer_html(*, invoice_available: bool = False) -> str:
     return html.replace("<body>", "<body>" + (invoice_draft_handoff_html() if invoice_available else ""), 1)
 
 
-def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None, customer_price_module=None, order_explorer=None, awb_explorer=None, *, invoice_source=None, invoice_draft_service=None, invoice_html: str | None = None, accepted_snapshot_sha256: str | None = None, customer_lan_ingress: bool = False, allowed_mutation_origins: frozenset[str] | None = None, recovery_authorizer=None, recovery_service=None, recovery_maintenance=None):
+def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None, customer_price_module=None, order_explorer=None, awb_explorer=None, *, source_invoice_explorer=None, invoice_source=None, invoice_draft_service=None, invoice_html: str | None = None, accepted_snapshot_sha256: str | None = None, customer_lan_ingress: bool = False, allowed_mutation_origins: frozenset[str] | None = None, recovery_authorizer=None, recovery_service=None, recovery_maintenance=None):
     # A request holds this for its full lifetime. Recovery therefore cannot close/swap
     # Core SQLite while an ordinary request is reading or writing it.
     request_gate = threading.RLock()
@@ -964,6 +982,9 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
             if customer_explorer is not None and customer_read_path and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
                 self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer access is loopback-only unless customer LAN ingress is enabled"})
                 return
+            if parsed.path == "/order-invoice/api/browse" and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
+                self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer access is loopback-only unless customer LAN ingress is enabled"})
+                return
             if parsed.path == "/":
                 body = _menu_html(customer_available=customer_explorer is not None, customer_prices_available=customer_price_module is not None, orders_available=order_explorer is not None, awb_available=awb_explorer is not None, invoice_available=invoice_available).encode("utf-8")
                 self.send_response(HTTPStatus.OK); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
@@ -993,6 +1014,52 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
             if order_explorer is not None and parsed.path.startswith("/orders/api/customer-template/"):
                 template = order_explorer.customer_template(unquote(parsed.path.removeprefix("/orders/api/customer-template/")))
                 self._send_json(HTTPStatus.OK, template) if template is not None else self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                return
+            if parsed.path == "/order-invoice/api/browse":
+                try:
+                    query = parse_qs(parsed.query, keep_blank_values=True)
+                    if set(query) != {"type", "query", "limit", "offset"}:
+                        raise ValueError
+                    types, searches = query.get("type", []), query.get("query", [])
+                    limits, offsets = query.get("limit", []), query.get("offset", [])
+                    if len(types) != 1 or len(searches) != 1 or len(limits) != 1 or len(offsets) != 1 or not searches[0]:
+                        raise ValueError
+                    record_type, search = types[0], searches[0]
+                    if not re.fullmatch(r"[0-9]+", limits[0]) or not re.fullmatch(r"[0-9]+", offsets[0]):
+                        raise ValueError
+                    limit, offset = int(limits[0]), int(offsets[0])
+                    if not 1 <= limit <= 250:
+                        raise ValueError
+                    if record_type == "source_order" and order_explorer is not None:
+                        page = order_explorer.browse_orders(search, limit=limit, offset=offset)
+                        results = [
+                            {"record_type": "source_order", "record_id": "source_order:" + row["order_id"],
+                             "order_id": row["order_id"], "order_date": row["order_date"], "customer_id": row["customer_id"]}
+                            for row in page["orders"]
+                        ]
+                    elif record_type == "source_invoice" and source_invoice_explorer is not None:
+                        page = source_invoice_explorer.search_invoices(prefix=search, limit=limit, offset=offset)
+                        results = [
+                            {"record_type": "source_invoice", "record_id": "source_invoice:" + row["invoice_id"],
+                             "source_invoice_number": row["invoice_id"], "invoice_date": row["invoice_date"],
+                             "customer_id": row["customer_id"], "customer_name": row["customer_name"],
+                             "slash_family": row["slash_family"]}
+                            for row in page["invoices"]
+                        ]
+                    elif record_type == "core_draft" and invoice_draft_service is not None:
+                        page = invoice_draft_service.store.list_drafts(search, limit=limit, offset=offset)
+                        results = [
+                            {"record_type": "core_draft", "record_id": "core_draft:" + row["draft_id"], "draft_id": row["draft_id"],
+                             "created_by": row["created_by"], "created_at": row["created_at"], "status": row["status"]}
+                            for row in page["drafts"]
+                        ]
+                    else:
+                        raise ValueError
+                    self._send_json(HTTPStatus.OK, {"record_type": record_type, "total": page["total"], "limit": page["limit"],
+                                                     "offset": page["offset"], "has_more": page["has_more"],
+                                                     "next_offset": page["next_offset"], "results": results})
+                except (KeyError, TypeError, ValueError, sqlite3.Error):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid browse query"})
                 return
             if awb_explorer is not None and parsed.path == "/shipments":
                 self.send_response(HTTPStatus.PERMANENT_REDIRECT)
