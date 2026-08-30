@@ -44,6 +44,32 @@ class TestOrderInvoiceWorkspaceUi(unittest.TestCase):
         for forbidden in ('Save', 'Issue', 'Print', 'Export', 'AWB Save', 'legacy-write'):
             self.assertNotIn(forbidden, html)
 
+    def test_workspace_contract_renders_only_the_current_page_and_has_display_only_language_toggle(self):
+        from apc_core.order_invoice_ui import order_invoice_html
+
+        html = order_invoice_html()
+        for marker in (
+            'id="order-invoice-page-jump"',
+            'id="order-invoice-next-page"',
+            'id="order-invoice-prev-page"',
+            'id="order-invoice-line-window"',
+            "api/source-orders/",
+            "openSourceOrder",
+            "renderLinePage",
+            "function render(payload){results.replaceChildren();selected=null;linePage=null;lineWindow.replaceChildren();detail.textContent=''",
+            "event.key===' '",
+            'event.preventDefault()',
+            "toggleLanguage()",
+            "currentOffset",
+            "next_offset",
+        ):
+            self.assertIn(marker, html)
+        self.assertNotIn('innerHTML', html)
+        self.assertNotIn("method:'POST'", html)
+        self.assertNotIn("method:'PUT'", html)
+        self.assertNotIn("method:'PATCH'", html)
+        self.assertNotIn("method:'DELETE'", html)
+
     def test_handler_serves_shared_workspace_without_adding_a_mutation_route(self):
         from apc_core.item_explorer import make_handler
 

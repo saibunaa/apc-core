@@ -198,7 +198,19 @@ class OrderExplorer:
             ],
         }
 
-    def open_order(self, order_id: object) -> dict[str, object] | None:
+    def open_order(
+        self, order_id: object, *, limit: object | None = None, offset: object = 0
+    ) -> dict[str, object] | None:
+        """Open an exact source order, optionally as one bounded line page.
+
+        The legacy no-page call shape remains available for existing order routes.
+        New workspace callers must pass ``limit`` and receive page metadata.
+        """
+        paged = limit is not None or offset != 0
+        if paged:
+            page_limit, page_offset = self._page(_MAX_DETAIL_ROWS if limit is None else limit, offset)
+        else:
+            page_limit, page_offset = _MAX_DETAIL_ROWS, 0
         if type(order_id) is not str:
             return None
         with self._lock:
@@ -210,6 +222,9 @@ class OrderExplorer:
             ).fetchone()
             if order is None:
                 return None
+            total = int(self._connection.execute(
+                'SELECT COUNT(*) FROM "MainDB__ORDER_ITEM" WHERE "Order No" = ? LIMIT 1', (order_id,)
+            ).fetchone()[0])
             description_th = self._order_item_field("Description TH")
             description = self._order_item_field("Description")
             description_en = self._order_item_field("Description2")
@@ -225,8 +240,9 @@ class OrderExplorer:
                 f'CASE WHEN TRIM(COALESCE(oi."Item ID", \'\')) = \'\' AND TRIM(COALESCE({note}, \'\')) <> \'\' THEN 1 ELSE 0 END '
                 'FROM "MainDB__ORDER_ITEM" AS oi '
                 'LEFT JOIN "MainDB__ITEM" AS item ON item."Item ID" = oi."Item ID" '
-                'WHERE oi."Order No" = ? LIMIT ?',
-                (order_id, _MAX_DETAIL_ROWS),
+                'WHERE oi."Order No" = ? '
+                'ORDER BY CAST(oi."Line No" AS INTEGER), oi."Line No" LIMIT ? OFFSET ?',
+                (order_id, page_limit, page_offset),
             ).fetchall()
         lines = [
             {
@@ -242,13 +258,23 @@ class OrderExplorer:
             }
             for row in rows
         ]
-        lines.sort(key=lambda line: _line_sort_key(line["line_no"]))
-        return {
+        result = {
             "order_id": _text(order[0]),
             "order_date": _text(order[1]),
             "customer_id": _text(order[2]),
             "customer_name": _text(order[3]),
             "lines": lines,
+        }
+        if not paged:
+            return result
+        next_offset = page_offset + page_limit
+        return {
+            **result,
+            "total": total,
+            "limit": page_limit,
+            "offset": page_offset,
+            "has_more": next_offset < total,
+            "next_offset": next_offset if next_offset < total else None,
         }
 
     def customer_template(self, customer_id: object) -> dict[str, object] | None:

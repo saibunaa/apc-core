@@ -1,5 +1,7 @@
 from dataclasses import FrozenInstanceError
 from pathlib import Path
+import sqlite3
+import tempfile
 import unittest
 
 
@@ -292,3 +294,53 @@ class TestOrderInvoiceWorkspaceContract(unittest.TestCase):
             pass
         else:
             raise AssertionError("render line page must be immutable")
+
+    def test_source_order_mapping_retains_bounded_page_metadata(self):
+        from apc_core.order_invoice_workspace import map_source_order
+
+        dto = map_source_order(
+            {
+                "order_id": "ORD/2026/LARGE",
+                "customer_id": "C/001",
+                "customer_name": "Customer One",
+                "lines": [{"line_no": "1", "item_id": "ITEM-1", "qty": "1"}],
+                "total": 1661,
+                "next_offset": 1,
+            },
+            source_sha256="d" * 64,
+        )
+
+        self.assertEqual(1661, dto.line_total)
+        self.assertEqual(1, dto.next_offset)
+
+    def test_source_order_reader_pages_all_historical_capacity_fixtures_without_full_first_page(self):
+        from apc_core.order_explorer import OrderExplorer
+        from tests.test_order_explorer import TestOrderExplorerContract
+
+        for line_count in (86, 250, 1076, 1363, 1661):
+            with self.subTest(line_count=line_count), tempfile.TemporaryDirectory() as tmp:
+                fixture = TestOrderExplorerContract()
+                source = fixture.make_snapshot(Path(tmp))
+                connection = sqlite3.connect(source)
+                connection.executemany(
+                    'INSERT INTO "MainDB__ORDER_ITEM" VALUES (?, ?, ?, ?)',
+                    [("ORD/2026/LARGE", str(index), f"ITEM-{index}", "1") for index in range(line_count)],
+                )
+                connection.execute(
+                    'INSERT INTO "MainDB__ORDER" VALUES (?, ?, ?)',
+                    ("ORD/2026/LARGE", "2026-08-30", "C/001"),
+                )
+                connection.commit()
+                connection.close()
+                explorer = OrderExplorer(source)
+                first = explorer.open_order("ORD/2026/LARGE", limit=250, offset=0)
+                self.assertEqual(line_count, first["total"])
+                self.assertEqual(min(250, line_count), len(first["lines"]))
+                self.assertEqual(250 if line_count > 250 else None, first["next_offset"])
+                self.assertEqual([str(index) for index in range(min(250, line_count))], [line["line_no"] for line in first["lines"]])
+                if line_count > 250:
+                    last_offset = ((line_count - 1) // 250) * 250
+                    last = explorer.open_order("ORD/2026/LARGE", limit=250, offset=last_offset)
+                    self.assertEqual(line_count - last_offset, len(last["lines"]))
+                    self.assertIsNone(last["next_offset"])
+                explorer.close()

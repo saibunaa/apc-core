@@ -13,7 +13,20 @@ from unittest.mock import Mock, patch
 class _BrowseOrderSource:
     def __init__(self, row=None):
         self.calls = 0
+        self.open_calls = 0
         self.row = row or {"order_id": "ORD//2026/001", "order_date": "2026-08-29", "customer_id": "C/001"}
+
+    def open_order(self, order_id, *, limit, offset):
+        self.open_calls += 1
+        assert (order_id, limit, offset) == ("ORD//2026/001", 2, 0)
+        return {
+            "order_id": order_id, "order_date": "2026-08-29", "customer_id": "C/001", "customer_name": "Customer One",
+            "lines": [
+                {"line_no": "0", "item_id": "ITEM-0", "qty": "1", "description_th": "ไทย", "reference": "", "description_en": "English", "is_annotation": False},
+                {"line_no": "1", "item_id": "ITEM-1", "qty": "2", "description_th": "ไทย 2", "reference": "", "description_en": "English 2", "is_annotation": False},
+            ],
+            "total": 1661, "limit": limit, "offset": offset, "has_more": True, "next_offset": 2,
+        }
 
     def browse_orders(self, query, *, limit, offset):
         self.calls += 1
@@ -104,6 +117,93 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
 
         self.assertEqual([HTTPStatus.OK], statuses)
         self.assertEqual(1, source.calls)
+
+    def test_open_source_order_denies_private_lan_before_reader_open(self):
+        source = _BrowseOrderSource()
+        request, statuses = self.handler(order_source=source)
+        request.client_address = ("192.168.1.42", 1)
+        request.path = "/order-invoice/api/source-orders/ORD//2026/001?limit=2&offset=0"
+
+        request.do_GET()
+
+        self.assertEqual([HTTPStatus.FORBIDDEN], statuses)
+        self.assertEqual(
+            {"error": "customer access is loopback-only unless customer LAN ingress is enabled"},
+            json.loads(request.wfile.getvalue()),
+        )
+        self.assertEqual(0, source.open_calls)
+
+    def test_open_source_order_line_page_is_closed_read_only_and_preserves_exact_slashes(self):
+        source = _BrowseOrderSource()
+        statuses, payload = self.get(
+            "/order-invoice/api/source-orders/ORD//2026/001?limit=2&offset=0", order_source=source
+        )
+
+        self.assertEqual([HTTPStatus.OK], statuses)
+        self.assertEqual(1, source.open_calls)
+        self.assertEqual(
+            {"record_type", "record_id", "order_id", "order_date", "customer_id", "customer_name", "lines", "total", "limit", "offset", "has_more", "next_offset"},
+            set(payload),
+        )
+        self.assertEqual("source_order:ORD//2026/001", payload["record_id"])
+        self.assertEqual(1661, payload["total"])
+        self.assertEqual(2, len(payload["lines"]))
+        self.assertEqual(
+            {"line_no", "item_id", "qty", "description_th", "reference", "description_en", "is_annotation"},
+            set(payload["lines"][0]),
+        )
+        self.assertNotIn("source_sha256", repr(payload))
+        self.assertNotIn("provenance", repr(payload).lower())
+
+    def test_open_source_order_accepts_actual_order_explorer_line_contract(self):
+        from apc_core.order_explorer import OrderExplorer
+        from tests.test_order_explorer import TestOrderExplorerContract
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = OrderExplorer(TestOrderExplorerContract().make_snapshot(Path(tmp)))
+            try:
+                statuses, payload = self.get(
+                    "/order-invoice/api/source-orders/ORD%2F2026%2F001?limit=2&offset=0", order_source=source
+                )
+            finally:
+                source.close()
+
+        self.assertEqual([HTTPStatus.OK], statuses)
+        self.assertEqual(["2", "3"], [line["line_no"] for line in payload["lines"]])
+        self.assertEqual(
+            {"line_no", "item_id", "qty", "description_th", "reference", "description_en", "is_annotation"},
+            set(payload["lines"][0]),
+        )
+
+    def test_open_source_order_rejects_bad_page_parameters_before_reading(self):
+        source = _BrowseOrderSource()
+        statuses, payload = self.get(
+            "/order-invoice/api/source-orders/ORD//2026/001?limit=251&offset=0", order_source=source
+        )
+
+        self.assertEqual([HTTPStatus.BAD_REQUEST], statuses)
+        self.assertEqual({"error": "invalid order detail query"}, payload)
+        self.assertEqual(0, source.open_calls)
+
+    def test_open_source_order_rejects_sqlite_overflow_offset_before_reader_open(self):
+        source = _BrowseOrderSource()
+        statuses, payload = self.get(
+            "/order-invoice/api/source-orders/ORD//2026/001?limit=2&offset=9223372036854775808", order_source=source
+        )
+
+        self.assertEqual([HTTPStatus.BAD_REQUEST], statuses)
+        self.assertEqual({"error": "invalid order detail query"}, payload)
+        self.assertEqual(0, source.open_calls)
+
+    def test_browse_rejects_sqlite_overflow_offset_before_reader_access(self):
+        source = _BrowseOrderSource()
+        statuses, payload = self.get(
+            "/order-invoice/api/browse?type=source_order&query=ORD&limit=50&offset=9223372036854775808", order_source=source
+        )
+
+        self.assertEqual([HTTPStatus.BAD_REQUEST], statuses)
+        self.assertEqual({"error": "invalid browse query"}, payload)
+        self.assertEqual(0, source.calls)
 
     def test_browse_source_order_returns_a_closed_type_specific_dto(self):
         statuses, payload = self.get("/order-invoice/api/browse?type=source_order&query=ORD//&limit=1&offset=0")
@@ -216,6 +316,7 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
         for method_name in ("do_POST", "do_PUT", "do_PATCH", "do_DELETE"):
             with self.subTest(method_name=method_name):
                 self.assertNotIn("/order-invoice/api/browse", inspect.getsource(getattr(handler_class, method_name)))
+                self.assertNotIn("/order-invoice/api/source-orders/", inspect.getsource(getattr(handler_class, method_name)))
 
 
 class TestOrderInvoiceRuntimeLifecycle(unittest.TestCase):

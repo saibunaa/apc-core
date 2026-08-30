@@ -112,6 +112,10 @@ def map_source_order(order: object, *, source_sha256: object) -> SourceRenderDTO
     customer_id = _text(order.get("customer_id"), "customer id")
     customer_name = _text(order.get("customer_name"), "customer name")
     lines = _line_page(order.get("lines"), forbid_order_provenance=False)
+    total = _page_number(order.get("total", len(lines)), "line total", allow_none=False)
+    next_offset = _page_number(order.get("next_offset"), "next offset", allow_none=True)
+    if total is None or total < len(lines):
+        raise ValueError("invalid line total")
     return SourceRenderDTO(
         record_type="source_order",
         record_id=f"source_order:{order_id}",
@@ -119,8 +123,8 @@ def map_source_order(order: object, *, source_sha256: object) -> SourceRenderDTO
         customer_id=customer_id,
         customer_name=customer_name,
         line_page=lines,
-        line_total=len(lines),
-        next_offset=None,
+        line_total=total,
+        next_offset=next_offset,
         read_only=True,
     )
 

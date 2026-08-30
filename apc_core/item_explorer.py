@@ -984,7 +984,7 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
             if customer_explorer is not None and customer_read_path and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
                 self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer access is loopback-only unless customer LAN ingress is enabled"})
                 return
-            if parsed.path in {"/order-invoice/", "/order-invoice/api/browse"} and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
+            if (parsed.path in {"/order-invoice/", "/order-invoice/api/browse"} or parsed.path.startswith("/order-invoice/api/source-orders/")) and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
                 self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer access is loopback-only unless customer LAN ingress is enabled"})
                 return
             if parsed.path == "/":
@@ -1020,6 +1020,41 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                 template = order_explorer.customer_template(unquote(parsed.path.removeprefix("/orders/api/customer-template/")))
                 self._send_json(HTTPStatus.OK, template) if template is not None else self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
                 return
+            if order_explorer is not None and parsed.path.startswith("/order-invoice/api/source-orders/"):
+                try:
+                    query = parse_qs(parsed.query, keep_blank_values=True)
+                    if set(query) != {"limit", "offset"}:
+                        raise ValueError
+                    limits, offsets = query.get("limit", []), query.get("offset", [])
+                    if len(limits) != 1 or len(offsets) != 1:
+                        raise ValueError
+                    if not re.fullmatch(r"[0-9]+", limits[0]) or not re.fullmatch(r"[0-9]+", offsets[0]):
+                        raise ValueError
+                    limit, offset = int(limits[0]), int(offsets[0])
+                    if not 1 <= limit <= 250 or offset > 9_223_372_036_854_775_807:
+                        raise ValueError
+                    order_id = unquote(parsed.path.removeprefix("/order-invoice/api/source-orders/"))
+                    if not order_id:
+                        raise ValueError
+                    page = order_explorer.open_order(order_id, limit=limit, offset=offset)
+                except (KeyError, OverflowError, TypeError, ValueError, sqlite3.Error):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid order detail query"})
+                else:
+                    if page is None:
+                        self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                    else:
+                        lines = [
+                            {key: row[key] for key in ("line_no", "item_id", "qty", "description_th", "reference", "description_en", "is_annotation")}
+                            for row in page["lines"]
+                        ]
+                        self._send_json(HTTPStatus.OK, {
+                            "record_type": "source_order", "record_id": "source_order:" + page["order_id"],
+                            "order_id": page["order_id"], "order_date": page["order_date"],
+                            "customer_id": page["customer_id"], "customer_name": page["customer_name"],
+                            "lines": lines, "total": page["total"], "limit": page["limit"],
+                            "offset": page["offset"], "has_more": page["has_more"], "next_offset": page["next_offset"],
+                        })
+                return
             if parsed.path == "/order-invoice/api/browse":
                 try:
                     query = parse_qs(parsed.query, keep_blank_values=True)
@@ -1033,7 +1068,7 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                     if not re.fullmatch(r"[0-9]+", limits[0]) or not re.fullmatch(r"[0-9]+", offsets[0]):
                         raise ValueError
                     limit, offset = int(limits[0]), int(offsets[0])
-                    if not 1 <= limit <= 250:
+                    if not 1 <= limit <= 250 or offset > 9_223_372_036_854_775_807:
                         raise ValueError
                     if record_type == "source_order" and order_explorer is not None:
                         page = order_explorer.browse_orders(search, limit=limit, offset=offset)
@@ -1063,7 +1098,7 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                     self._send_json(HTTPStatus.OK, {"record_type": record_type, "total": page["total"], "limit": page["limit"],
                                                      "offset": page["offset"], "has_more": page["has_more"],
                                                      "next_offset": page["next_offset"], "results": results})
-                except (KeyError, TypeError, ValueError, sqlite3.Error):
+                except (KeyError, OverflowError, TypeError, ValueError, sqlite3.Error):
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid browse query"})
                 return
             if awb_explorer is not None and parsed.path == "/shipments":
