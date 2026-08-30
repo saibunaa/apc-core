@@ -30,3 +30,13 @@ APC_CORE_DATA_DIR=/tmp/apc-core-test-state APC_CORE_RECOVERY_TEST_PIN='<test PIN
 `docker-compose.mini.yml` is a **candidate-only** deployment contract for Mini; it is not a live deployment instruction. It remains inert until an operator explicitly supplies a candidate image tag, container name, accepted-state directory, Core-data directory, canonical allowed mutation origin, and (optionally, defaulting to `mini-host`) Docker network. It has no host-port mapping, uses an external private network, runs non-root with a read-only root filesystem, and defaults its candidate restart policy to `no`.
 
 Use only non-secret environment provisioning outside the repository. Any use or promotion of this candidate requires a **fresh promotion gate**; do not reuse an earlier approval or infer live readiness from this manifest.
+
+## Developer-local invoice draft reconciliation
+
+The invoice-draft reconciliation evidence is developer-local and uses only synthetic fixtures:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_invoice_draft_reconciliation -v
+```
+
+It verifies draft-only preview/save provenance, explicit staff resolution of opaque AWB conflicts, idempotent replay, and source-hash mismatch denial. It does **not** issue or number invoices, approve, print, export, account, sync, write AWB or legacy data, access MDB/NAS/live data, or claim deployment or production readiness.

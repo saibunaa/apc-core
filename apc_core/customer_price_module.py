@@ -306,6 +306,17 @@ class CustomerPriceModule:
             rows = [row for row in rows if term in row["item_id"].casefold() or term in row["item_description"].casefold()]
         total = len(rows); next_offset = offset + limit; return {"customer_code": customer, "total": total, "limit": limit, "offset": offset, "has_more": next_offset < total, "next_offset": next_offset if next_offset < total else None, "rows": rows[offset:next_offset]}
 
+    def invoice_current_price(self, customer_code: object, item_id: object) -> dict[str, str]:
+        """Return exact active Core price evidence for a selected customer/item only."""
+        if type(customer_code) is not str or not customer_code or type(item_id) is not str or not item_id:
+            return {"status": "UNKNOWN", "value": ""}
+        with self._lock:
+            row = self._store.connection.execute(
+                "SELECT price FROM customer_price_rows WHERE customer_code=? AND item_id=? AND active=1",
+                (customer_code, item_id),
+            ).fetchone()
+        return {"status": "KNOWN", "value": str(row[0])} if row is not None else {"status": "UNKNOWN", "value": ""}
+
     def edit(self, customer_code: object, item_id: object, price: object, actor_username: object) -> dict[str, object]:
         customer = self._require_customer(customer_code)
         if type(item_id) is not str or not item_id.strip():

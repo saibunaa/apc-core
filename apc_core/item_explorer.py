@@ -14,6 +14,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from apc_core.awb_explorer import html as awb_explorer_html
+from apc_core.invoice_draft_builder import build_invoice_draft
+from apc_core.invoice_draft_previews import InvoiceDraftPreviewRegistry
+from apc_core.invoice_draft_ui import invoice_draft_html
+from apc_core.order_explorer import invoice_draft_handoff_html
 
 
 _PRIVATE_LAN_NETWORKS = (
@@ -21,6 +25,9 @@ _PRIVATE_LAN_NETWORKS = (
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
 )
+
+
+_MAX_INVOICE_PREVIEW_ORDERS = 20
 
 
 def _customer_client_allowed(client_address: str, customer_lan_ingress: bool) -> bool:
@@ -721,7 +728,7 @@ def _menu_html_body_existing() -> str:
     return """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>APC Core</title><style>:root{--ink:#202124;--muted:#6e737b;--line:#e6e6e8;--canvas:#eadbc8;--paper:#fff;--accent:#1d6b57;--mint-tint:#dff3ea;--mint-mid:#5fb890;--pink-tint:#fbe4ea;--pink-mid:#e2809a;--blue-tint:#e4edfc;--blue-mid:#6fa3e0;--amber-tint:#fdf1d4;--amber-mid:#d9ad42}*{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--ink);font:15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.shell{max-width:900px;margin:auto;padding:56px 24px;position:relative;z-index:1}.brand{font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:18px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.card{min-height:156px;border:2px solid var(--line);border-radius:20px;background:var(--paper);padding:22px;text-decoration:none;color:inherit;display:flex;flex-direction:column;justify-content:space-between;box-shadow:4px 4px 0 rgba(32,33,36,.14);transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease}.card h2{font-size:21px;margin:0}.card.mint{background:var(--mint-tint);border-color:var(--mint-mid)}.card.pink{background:var(--pink-tint);border-color:var(--pink-mid)}.card.blue{background:var(--blue-tint);border-color:var(--blue-mid)}.card.amber{background:var(--amber-tint);border-color:var(--amber-mid)}.card.mint:hover,.card.mint:focus-visible{transform:translate(-2px,-2px);box-shadow:6px 6px 0 rgba(95,184,144,.45)}.card.pink:hover,.card.pink:focus-visible{transform:translate(-2px,-2px);box-shadow:6px 6px 0 rgba(226,128,154,.45)}.card.blue:hover,.card.blue:focus-visible{transform:translate(-2px,-2px);box-shadow:6px 6px 0 rgba(111,163,224,.45)}.card.amber:hover,.card.amber:focus-visible{transform:translate(-2px,-2px);box-shadow:6px 6px 0 rgba(217,173,66,.45)}.card:focus-visible{outline:3px solid var(--accent);outline-offset:3px}.card p{color:var(--muted)}.open{font-weight:600;color:var(--accent)}.card.soon{background:#fbf9f5;border:2px dashed var(--line);box-shadow:none;opacity:.75}.label{font-size:12px}@media(max-width:620px){.grid{grid-template-columns:1fr}}</style><body><main class="shell"><div class="brand">APC Core</div><section class="grid" aria-label="APC Core modules"><a class="card mint" href="items/"><div><h2>Items</h2><p>Search and inspect the item catalogue.</p></div><span class="open">Open Item Explorer →</span></a><div class="card soon"><div><h2>Orders</h2><p>Order work will appear here.</p></div><span class="label">Coming soon</span></div><a class="card pink" href="customers/"><div><h2>Customers</h2><p>Search and inspect Core-owned customer records.</p></div><span class="open">Open Customer Explorer →</span></a><a class="card blue" href="customer-prices/"><div><h2>Customer Prices</h2><p>Search and safely edit imported customer-item price rows.</p></div><span class="open">Open Customer Price →</span></a><div class="card soon"><div><h2>Shipments</h2><p>Shipment tracking will appear here.</p></div><span class="label">Coming soon</span></div><div class="card soon"><div><h2>Activity</h2><p>Shared activity will appear here.</p></div><span class="label">Coming soon</span></div></section></main></body></html>"""
 
 
-def _menu_html_body(*, customer_available: bool = True, customer_prices_available: bool = True, orders_available: bool = True, awb_available: bool | None = None) -> str:
+def _menu_html_body(*, customer_available: bool = True, customer_prices_available: bool = True, orders_available: bool = True, awb_available: bool | None = None, invoice_available: bool = False) -> str:
     body = _menu_html_body_existing().replace(
         '<div class="card soon"><div><h2>Orders</h2><p>Order work will appear here.</p></div><span class="label">Coming soon</span></div>',
         "",
@@ -744,6 +751,8 @@ def _menu_html_body(*, customer_available: bool = True, customer_prices_availabl
         '<section class="grid" aria-label="APC Core modules">' + ('<a class="card mint" href="orders/"><div><span class="label">Read-only</span><h2>Orders</h2><p>Open and review saved order forms and customer templates.</p></div><span class="open">Open Orders →</span></a>' if orders_available else ''),
         1,
     )
+    if invoice_available:
+        body = body.replace('<section class="grid" aria-label="APC Core modules">', '<section class="grid" aria-label="APC Core modules"><a class="card mint" href="invoices/"><div><span class="label">Draft only</span><h2>Invoice Draft</h2><p>Start from an explicitly opened order and review before saving.</p></div><span class="open">Open Invoice Draft →</span></a>', 1)
     if not customer_available:
         body = body.replace('<a class="card pink" href="customers/"><div><h2>Customers</h2><p>Search and inspect Core-owned customer records.</p></div><span class="open">Open Customer Explorer →</span></a>', '', 1)
     if not customer_prices_available:
@@ -751,8 +760,8 @@ def _menu_html_body(*, customer_available: bool = True, customer_prices_availabl
     return body
 
 
-def _menu_html(*, customer_available: bool = True, customer_prices_available: bool = True, orders_available: bool = True, awb_available: bool | None = None) -> str:
-    return _staff_identity_shell(_menu_html_body(customer_available=customer_available, customer_prices_available=customer_prices_available, orders_available=orders_available, awb_available=awb_available))
+def _menu_html(*, customer_available: bool = True, customer_prices_available: bool = True, orders_available: bool = True, awb_available: bool | None = None, invoice_available: bool = False) -> str:
+    return _staff_identity_shell(_menu_html_body(customer_available=customer_available, customer_prices_available=customer_prices_available, orders_available=orders_available, awb_available=awb_available, invoice_available=invoice_available))
 
 
 def _item_explorer_html_body() -> str:
@@ -835,21 +844,45 @@ def _customer_explorer_html() -> str:
     return _staff_identity_shell(html)
 
 
-def _order_explorer_html() -> str:
+def _order_explorer_html(*, invoice_available: bool = False) -> str:
     """Read-only frmOrderForm-style workspace; all data comes from same-origin GETs."""
-    return _staff_identity_shell("""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>APC Core · Order Forms</title>
+    html = _staff_identity_shell("""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>APC Core · Order Forms</title>
 <style>:root{--ink:#24272b;--muted:#68717c;--line:#e5e1db;--cream:#eadbc8;--paper:#fffdfa;--accent:#1d6b57;--warn:#8a6100}*{box-sizing:border-box}body{margin:0;background:var(--cream);color:var(--ink);font:14px system-ui,sans-serif}.shell{max-width:1500px;margin:auto;padding:28px}.utility,.toolbar,.header-grid,.workspace,.filters{display:flex;gap:10px;align-items:center}.utility{justify-content:space-between;color:var(--muted);font-size:12px}.workspace{align-items:start}.main{min-width:0;flex:1}.rail{width:290px}.pane{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}.header-grid{display:grid;grid-template-columns:120px 1fr 1fr 160px;align-items:stretch}.order-id{font-size:20px;font-weight:800;color:var(--accent)}label{display:block;font-weight:700;margin:6px 0}input,select,textarea,button{font:inherit;padding:9px;border:1px solid var(--line);border-radius:7px;width:100%}button{cursor:pointer;background:var(--accent);color:#fff;font-weight:700}.secondary{background:#fff;color:var(--accent)}.guarded{color:#777;background:#f4f2ee;cursor:not-allowed}.unmapped{color:var(--warn);font-size:12px}.notes{white-space:pre-wrap;min-height:48px}.shipment{color:var(--muted);padding:11px;background:#f7f4ef}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;margin-top:8px}th,td{border-bottom:1px solid var(--line);padding:8px;text-align:left;vertical-align:top}td.qty,td.ln{text-align:right}.annotation td{font-style:italic;background:#fff8df}.annotation td.annotation-text{font-weight:700}.modal{position:fixed;inset:0;background:#0006;display:grid;place-items:center;padding:20px;z-index:5}.modal[hidden]{display:none}.dialog{width:min(1160px,100%);max-height:90vh;overflow:auto;background:var(--paper);border-radius:12px;padding:18px}.filters{flex-wrap:wrap}.filters label{min-width:160px;flex:1}.selected{background:#dcefe5}tr[tabindex]{cursor:pointer}tr[tabindex]:focus{outline:3px solid var(--accent);outline-offset:-3px}@media(max-width:900px){.workspace{display:block}.rail{width:auto}.shell{padding:12px}.header-grid{grid-template-columns:1fr 1fr}}</style>
 <body><main id="frmOrderForm" class="shell"><div class="utility"><a href="../">Main menu</a><span>Order Forms · Read-only snapshot</span></div><div class="toolbar"><button id="open-order-forms" type="button">Open</button><span id="status">Template preview</span></div>
 <section class="pane"><div class="header-grid"><label>Customer code<input id="customer-code" list="customer-code-options" autocomplete="off"></label><datalist id="customer-code-options"></datalist><div><b>Customer name</b><div id="customer-name">—</div></div><label>Consignee (customer candidates)<select id="consignees"></select></label><div><b>Order No.</b><div id="order-id" class="order-id">—</div></div></div><div class="header-grid"><label>Order date<input id="order-date" readonly></label><label>Order config<textarea id="order-config" readonly></textarea></label><label>Invoice config<textarea id="invoice-config" readonly></textarea></label><div><b>Port / Country</b><div class="unmapped">unmapped</div></div></div></section>
 <section class="pane shipment"><b>Shipment & packing — not yet mapped</b><span class="unmapped"> · AWB remains a separate module until a verified Order↔AWB link exists.</span></section>
 <section class="workspace"><div class="main"><section class="pane"><h2>Order lines</h2><div class="table-wrap"><table><thead><tr><th>Ln</th><th>Item ID</th><th>Qty</th><th>Description Thai</th><th>##</th><th>Description Eng</th></tr></thead><tbody id="lines"></tbody></table></div></section><section class="pane"><b>Selected line (read-only)</b><div id="selected-line">Select an order line.</div></section></div><aside class="rail"><section class="pane"><h2>Notes</h2><h3>Order notes (customer template)</h3><div id="order-notes" class="notes"></div><h3>Invoice notes (customer template)</h3><div id="invoice-notes" class="notes"></div><h3>Order note (this order)</h3><div class="unmapped">unmapped</div></section><section class="pane"><h2>Guarded actions</h2><button type="button" class="guarded" aria-disabled="true" tabindex="-1">New · guarded</button><button type="button" class="guarded" aria-disabled="true" tabindex="-1">Save · guarded</button><button type="button" class="guarded" aria-disabled="true" tabindex="-1">Print · guarded</button></section></aside></section></main>
 <section id="frmOrderFormList" class="modal" role="dialog" aria-modal="true" aria-labelledby="order-list-title" hidden><div class="dialog"><div class="toolbar"><h2 id="order-list-title">Open order</h2><button id="close-order-forms" type="button" class="secondary">Close</button></div><div class="filters"><label>Order date From<input id="date-from" type="date"></label><label>Order date To<input id="date-to" type="date"></label><label>Customer<input id="customer-filter"></label><button id="search-orders" type="button">Search</button></div><p id="order-total"></p><div class="table-wrap"><table><thead><tr><th>Date</th><th>Cust</th><th>Customer name</th><th>Country <span class="unmapped">unmapped</span></th><th>AWB <span class="unmapped">unmapped</span></th><th>Order No.</th><th>B/L/M/P/W/U/T</th></tr></thead><tbody id="order-results"></tbody></table></div><div class="toolbar"><button id="open-selected" type="button">Open selected</button><button id="close-order-forms-bottom" type="button" class="secondary">Close</button></div></div></section>
-<script>(()=>{const $=s=>document.querySelector(s),clean=n=>n.replaceChildren(),put=(n,v)=>n.textContent=v||'',getJSON=p=>fetch(p,{credentials:'same-origin',cache:'no-store'}).then(r=>r.ok?r.json():Promise.reject(new Error('Read failed'))),openButton=$('#open-order-forms'),modal=$('#frmOrderFormList');let selected='',selectedRow=null;function choose(row,order){if(selectedRow)selectedRow.classList.remove('selected');selectedRow=row;selected=order.order_id;row.classList.add('selected')}function renderTemplate(data){$('#customer-code').value=data.customer_id;put($('#customer-name'),data.customer_name);$('#consignees').replaceChildren(...data.consignee_candidates.map(v=>{const o=document.createElement('option');o.textContent=v;return o}));$('#order-config').value=data.order_config;$('#invoice-config').value=data.invoice_config;put($('#order-notes'),data.order_notes.join('\\n'));put($('#invoice-notes'),data.invoice_notes.join('\\n'))}function inspect(line){put($('#selected-line'),[line.item_id,line.qty,line.description_th,line.reference,line.description_en].join(' · '))}function renderOrder(data){selected=data.order_id;put($('#order-id'),data.order_id);$('#order-date').value=data.order_date;put($('#status'),'Read-only saved order '+data.order_id);const body=$('#lines');clean(body);data.lines.forEach(line=>{const row=document.createElement('tr');if(line.is_annotation){row.className='annotation'}for(const [i,value] of [line.line_no,line.item_id,line.qty,line.description_th,line.reference,line.description_en].entries()){const cell=document.createElement('td');cell.className=i===0?'ln':i===2?'qty':line.is_annotation&&i===3?'annotation-text':'';put(cell,value);row.append(cell)}row.tabIndex=0;row.onclick=()=>inspect(line);row.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();inspect(line)}};body.append(row)})}function loadOrder(orderNo){return getJSON('api/orders/'+encodeURIComponent(orderNo)).then(renderOrder)}function templateFor(code){return getJSON('api/customer-template/'+encodeURIComponent(code)).then(renderTemplate)}function commitCustomerCode(){const code=$('#customer-code').value.trim();if(code)templateFor(code).catch(()=>put($('#status'),'Customer template not found'))}function close(){modal.hidden=true;openButton.focus()}function rowFor(order){const row=document.createElement('tr');row.tabIndex=0;for(const value of [order.order_date,order.customer_id,order.customer_name,'—','—',order.order_id,'—']){const cell=document.createElement('td');put(cell,value);row.append(cell)}row.onclick=()=>choose(row,order);row.ondblclick=()=>{choose(row,order);loadOrder(order.order_id).then(close)};row.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();choose(row,order);loadOrder(order.order_id).then(close)}};return row}function search(){const q=new URLSearchParams();[['customer','customer-filter'],['date_from','date-from'],['date_to','date-to']].forEach(([key,id])=>{if($('#'+id).value)q.set(key,$('#'+id).value)});return getJSON('api/orders?'+q).then(data=>{put($('#order-total'),'Total Record(s): '+data.total);const rows=data.orders.map(rowFor);$('#order-results').replaceChildren(...rows);if(rows.length)choose(rows[0],data.orders[0]);$('#customer-code-options').replaceChildren(...data.orders.map(order=>{const option=document.createElement('option');option.value=order.customer_id;return option}))})}openButton.onclick=()=>{modal.hidden=false;$('#date-from').focus();search()};$('#close-order-forms').onclick=close;$('#close-order-forms-bottom').onclick=close;$('#search-orders').onclick=search;$('#open-selected').onclick=()=>{if(selected)loadOrder(selected).then(close)};$('#customer-code').onkeydown=e=>{if(e.key==='Enter'||e.key==='Tab')commitCustomerCode()};document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!modal.hidden)close()})})();</script></body></html>""")
+<script>(()=>{const $=s=>document.querySelector(s),clean=n=>n.replaceChildren(),put=(n,v)=>n.textContent=v||'',getJSON=p=>fetch(p,{credentials:'same-origin',cache:'no-store'}).then(r=>r.ok?r.json():Promise.reject(new Error('Read failed'))),openButton=$('#open-order-forms'),modal=$('#frmOrderFormList');let selected='',selectedRow=null;function choose(row,order){if(selectedRow)selectedRow.classList.remove('selected');selectedRow=row;selected=order.order_id;row.classList.add('selected')}function renderTemplate(data){$('#customer-code').value=data.customer_id;put($('#customer-name'),data.customer_name);$('#consignees').replaceChildren(...data.consignee_candidates.map(v=>{const o=document.createElement('option');o.textContent=v;return o}));$('#order-config').value=data.order_config;$('#invoice-config').value=data.invoice_config;put($('#order-notes'),data.order_notes.join('\\n'));put($('#invoice-notes'),data.invoice_notes.join('\\n'))}function inspect(line){put($('#selected-line'),[line.item_id,line.qty,line.description_th,line.reference,line.description_en].join(' · '))}function renderOrder(data){selected=data.order_id;window.dispatchEvent(new CustomEvent('apc-core-opened-order',{detail:data.order_id}));put($('#order-id'),data.order_id);$('#order-date').value=data.order_date;put($('#status'),'Read-only saved order '+data.order_id);const body=$('#lines');clean(body);data.lines.forEach(line=>{const row=document.createElement('tr');if(line.is_annotation){row.className='annotation'}for(const [i,value] of [line.line_no,line.item_id,line.qty,line.description_th,line.reference,line.description_en].entries()){const cell=document.createElement('td');cell.className=i===0?'ln':i===2?'qty':line.is_annotation&&i===3?'annotation-text':'';put(cell,value);row.append(cell)}row.tabIndex=0;row.onclick=()=>inspect(line);row.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();inspect(line)}};body.append(row)})}function loadOrder(orderNo){return getJSON('api/orders/'+encodeURIComponent(orderNo)).then(renderOrder)}function templateFor(code){return getJSON('api/customer-template/'+encodeURIComponent(code)).then(renderTemplate)}function commitCustomerCode(){const code=$('#customer-code').value.trim();if(code)templateFor(code).catch(()=>put($('#status'),'Customer template not found'))}function close(){modal.hidden=true;openButton.focus()}function rowFor(order){const row=document.createElement('tr');row.tabIndex=0;for(const value of [order.order_date,order.customer_id,order.customer_name,'—','—',order.order_id,'—']){const cell=document.createElement('td');put(cell,value);row.append(cell)}row.onclick=()=>choose(row,order);row.ondblclick=()=>{choose(row,order);loadOrder(order.order_id).then(close)};row.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();choose(row,order);loadOrder(order.order_id).then(close)}};return row}function search(){const q=new URLSearchParams();[['customer','customer-filter'],['date_from','date-from'],['date_to','date-to']].forEach(([key,id])=>{if($('#'+id).value)q.set(key,$('#'+id).value)});return getJSON('api/orders?'+q).then(data=>{put($('#order-total'),'Total Record(s): '+data.total);const rows=data.orders.map(rowFor);$('#order-results').replaceChildren(...rows);selected='';selectedRow=null;$('#customer-code-options').replaceChildren(...data.orders.map(order=>{const option=document.createElement('option');option.value=order.customer_id;return option}))})}openButton.onclick=()=>{modal.hidden=false;$('#date-from').focus();search()};$('#close-order-forms').onclick=close;$('#close-order-forms-bottom').onclick=close;$('#search-orders').onclick=search;$('#open-selected').onclick=()=>{if(selected)loadOrder(selected).then(close)};$('#customer-code').onkeydown=e=>{if(e.key==='Enter'||e.key==='Tab')commitCustomerCode()};document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!modal.hidden)close()})})();</script></body></html>""")
+    return html.replace("<body>", "<body>" + (invoice_draft_handoff_html() if invoice_available else ""), 1)
 
-def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None, customer_price_module=None, order_explorer=None, awb_explorer=None, *, customer_lan_ingress: bool = False, allowed_mutation_origins: frozenset[str] | None = None, recovery_authorizer=None, recovery_service=None, recovery_maintenance=None):
+
+def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None, customer_price_module=None, order_explorer=None, awb_explorer=None, *, invoice_source=None, invoice_draft_service=None, invoice_html: str | None = None, accepted_snapshot_sha256: str | None = None, customer_lan_ingress: bool = False, allowed_mutation_origins: frozenset[str] | None = None, recovery_authorizer=None, recovery_service=None, recovery_maintenance=None):
     # A request holds this for its full lifetime. Recovery therefore cannot close/swap
     # Core SQLite while an ordinary request is reading or writing it.
     request_gate = threading.RLock()
+    invoice_available = (
+        invoice_source is not None
+        and invoice_draft_service is not None
+        and type(accepted_snapshot_sha256) is str
+        and len(accepted_snapshot_sha256) == 64
+        and all(character in "0123456789abcdef" for character in accepted_snapshot_sha256)
+    )
+    invoice_previews = InvoiceDraftPreviewRegistry() if invoice_available else None
+    invoice_page = invoice_html if type(invoice_html) is str else invoice_draft_html()
+
+    def _invoice_public_proposal(proposal):
+        """Keep AWB resolution values server-held while exposing a draft review shape."""
+        result = dict(proposal)
+        decisions = []
+        for decision in proposal["decisions"]:
+            if decision["conflict_id"].endswith(":awb"):
+                decisions.append({"conflict_id": decision["conflict_id"]})
+            else:
+                decisions.append(dict(decision))
+        result["decisions"] = tuple(decisions)
+        return result
+
     def _canonical_program_path(path: str) -> str:
         """Accept the canonical /program/ mount while keeping proxy-stripped routes compatible."""
         return path.removeprefix("/program") if path.startswith("/program/") else path
@@ -932,7 +965,7 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                 self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer access is loopback-only unless customer LAN ingress is enabled"})
                 return
             if parsed.path == "/":
-                body = _menu_html(customer_available=customer_explorer is not None, customer_prices_available=customer_price_module is not None, orders_available=order_explorer is not None, awb_available=awb_explorer is not None).encode("utf-8")
+                body = _menu_html(customer_available=customer_explorer is not None, customer_prices_available=customer_price_module is not None, orders_available=order_explorer is not None, awb_available=awb_explorer is not None, invoice_available=invoice_available).encode("utf-8")
                 self.send_response(HTTPStatus.OK); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
             if order_explorer is not None and parsed.path == "/orders":
                 self.send_response(HTTPStatus.PERMANENT_REDIRECT)
@@ -941,7 +974,7 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                 self.end_headers()
                 return
             if order_explorer is not None and parsed.path == "/orders/":
-                self._send_html(HTTPStatus.OK, _order_explorer_html())
+                self._send_html(HTTPStatus.OK, _order_explorer_html(invoice_available=invoice_available))
                 return
             if order_explorer is not None and parsed.path == "/orders/api/orders":
                 try:
@@ -1036,6 +1069,32 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                 except (ValueError, sqlite3.Error):
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid customer query"})
                 return
+            if invoice_available and (parsed.path == "/invoices" or parsed.path.startswith("/invoices/")) and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
+                self._send_json(HTTPStatus.FORBIDDEN, {"error": "invoice access is loopback-only unless customer LAN ingress is enabled"})
+                return
+            if invoice_available and parsed.path == "/invoices":
+                self.send_response(HTTPStatus.PERMANENT_REDIRECT)
+                self.send_header("Location", "invoices/")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
+            if invoice_available and parsed.path == "/invoices/":
+                self._send_html(HTTPStatus.OK, _staff_identity_shell(invoice_page))
+                return
+            if invoice_available and parsed.path == "/invoices/api/candidates":
+                try:
+                    query = parse_qs(parsed.query, keep_blank_values=True)
+                    customer_ids = query.get("customer_id", [])
+                    shipment_dates = query.get("shipment_date", [])
+                    if len(customer_ids) != 1 or len(shipment_dates) != 1 or not customer_ids[0] or not shipment_dates[0]:
+                        raise ValueError
+                    limits = query.get("limit", [50])
+                    if len(limits) != 1:
+                        raise ValueError
+                    self._send_json(HTTPStatus.OK, invoice_source.discover_legacy_candidates(customer_ids[0], shipment_dates[0], limit=limits[0]))
+                except (ValueError, sqlite3.Error):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid invoice candidate query"})
+                return
             if parsed.path == "/healthz":
                 self._send_json(HTTPStatus.OK, {"status": "ok", "mode": "local_core"}); return
             api_path = parsed.path.removeprefix("/items")
@@ -1082,6 +1141,88 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                 return
             if customer_path == "/shipments" or customer_path.startswith("/shipments/"):
                 self._send_json(HTTPStatus.METHOD_NOT_ALLOWED, {"error": "shipments are read-only"})
+                return
+            if customer_path.startswith("/invoices/"):
+                if not invoice_available:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                    return
+                if not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "invoice access is loopback-only unless customer LAN ingress is enabled"})
+                    return
+                if customer_path not in {"/invoices/api/previews", "/invoices/api/drafts"}:
+                    self._send_json(HTTPStatus.METHOD_NOT_ALLOWED, {"error": "invoice mutation is unsupported"})
+                    return
+                if not self._require_json_same_origin():
+                    return
+                try:
+                    content_length = int(self.headers.get("Content-Length", "-1"))
+                    if content_length < 0 or content_length > 200_000:
+                        raise ValueError
+                    payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                    if type(payload) is not dict:
+                        raise ValueError
+                    if customer_path == "/invoices/api/previews":
+                        if set(payload) != {"selected_order_ids", "decisions"}:
+                            raise ValueError
+                        selected, decisions = payload["selected_order_ids"], payload["decisions"]
+                        if type(selected) is not list or not selected or len(selected) > _MAX_INVOICE_PREVIEW_ORDERS or any(type(value) is not str or not value for value in selected) or len(set(selected)) != len(selected) or type(decisions) is not list:
+                            raise ValueError
+                        orders = []
+                        source_orders = []
+                        for order_id in selected:
+                            source_order = invoice_source.read_order(order_id)
+                            if type(source_order) is not dict:
+                                raise ValueError
+                            source_orders.append(source_order)
+                            lines = [{"line_ref": line["line_id"], "item_id": line["item_id"], "quantity": line["quantity"],
+                                      "source_unit_price": line["source_unit_price"], "current_price": line["current_price"]}
+                                     for line in source_order.get("lines", ()) if type(line) is dict and line.get("item_id")]
+                            annotations = [
+                                {"line_ref": line["line_id"], "value": line["annotation_text"]}
+                                for line in source_order.get("lines", ())
+                                if type(line) is dict and line.get("is_annotation") is True and line.get("annotation_text")
+                            ]
+                            shipment_conflicts = []
+                            for field, evidence in source_order.get("shipment_metadata", {}).items():
+                                if type(evidence) is dict and evidence.get("status") != "UNANIMOUS":
+                                    shipment_conflicts.append({"conflict_id": f"{order_id}:{field}", "required": True,
+                                                               "existing_values": [{"value": value, "source": f"{order_id}:{field}"} for value in evidence.get("values", [])]})
+                            orders.append({"order_id": source_order["order_id"], "customer_id": source_order["customer_id"],
+                                           "document_family": "legacy-order", "lines": lines, "annotations": annotations,
+                                           "shipment_conflicts": shipment_conflicts})
+                        if len(orders) > 1:
+                            for field in ("shipment_date", "awb"):
+                                values = []
+                                for source_order in source_orders:
+                                    evidence = source_order.get("shipment_metadata", {}).get(field, {})
+                                    if type(evidence) is not dict:
+                                        raise ValueError
+                                    values.extend(
+                                        {"value": value, "source": f"{source_order['order_id']}:{field}"}
+                                        for value in evidence.get("values", ())
+                                        if type(value) is str and value
+                                    )
+                                if len({entry["value"] for entry in values}) != 1:
+                                    orders[0]["shipment_conflicts"].append(
+                                        {"conflict_id": f"selected:{field}", "required": True, "existing_values": values}
+                                    )
+                        proposal = build_invoice_draft({"accepted_snapshot_sha256": accepted_snapshot_sha256}, orders, selected, decisions)
+                        preview_ref = invoice_previews.issue(proposal, accepted_snapshot_sha256)
+                        self._send_json(HTTPStatus.OK, {"preview_ref": preview_ref, "proposal": _invoice_public_proposal(proposal)})
+                    else:
+                        if set(payload) != {"preview_ref", "actor"}:
+                            raise ValueError
+                        actor = payload["actor"]
+                        if type(actor) is not str or actor not in dict(explorer._local_store().active_staff()):
+                            self._send_json(HTTPStatus.FORBIDDEN, {"error": "active Core actor attribution required"})
+                            return
+                        held = invoice_previews.consume(payload["preview_ref"])
+                        if held is None:
+                            raise ValueError
+                        proposal, snapshot = held
+                        self._send_json(HTTPStatus.CREATED, invoice_draft_service.save(proposal, snapshot, actor))
+                except (KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError, ValueError, sqlite3.Error):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid invoice request"})
                 return
             if (customer_path.startswith("/admin/recovery/")
                     or customer_path.startswith("/customer-prices/api/customers/")
@@ -1244,8 +1385,16 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                 item = explorer.edit(item_id, payload, actor)
             except (UnicodeDecodeError, json.JSONDecodeError, ValueError, sqlite3.Error): self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid item edit"})
             else: self._send_json(HTTPStatus.OK, {"item": item})
-        do_PUT = do_POST
-        do_PATCH = do_POST
-        do_DELETE = do_POST
+        def _invoice_method_not_allowed(self):
+            if _canonical_program_path(urlparse(self.path).path).startswith("/invoices/"):
+                self._send_json(HTTPStatus.METHOD_NOT_ALLOWED, {"error": "invoice mutations require POST"})
+                return True
+            return False
+        def do_PUT(self):
+            if not self._invoice_method_not_allowed(): self.do_POST()
+        def do_PATCH(self):
+            if not self._invoice_method_not_allowed(): self.do_POST()
+        def do_DELETE(self):
+            if not self._invoice_method_not_allowed(): self.do_POST()
         def log_message(self, format: str, *args) -> None: return
     return Handler

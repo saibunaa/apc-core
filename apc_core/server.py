@@ -7,6 +7,9 @@ import stat
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+from .invoice_conversion_source import InvoiceConversionSource, ReadOnlyInvoiceSourceError
+from .invoice_draft_service import InvoiceDraftService
+from .invoice_drafts import InvoiceDraftStore
 from .item_explorer import ItemExplorer, make_handler
 from .order_explorer import OrderExplorer
 from .awb_explorer import AWBExplorer, ReadOnlySourceContractError as AWBSourceContractError
@@ -146,10 +149,11 @@ def load_accepted_customer_price_runtime(manifest_path: Path, *, data_dir: Path 
         os.close(descriptor)
 
 
-def load_accepted_customer_price_order_runtime(manifest_path: Path, *, data_dir: Path | None = None) -> tuple[ItemExplorer, CustomerExplorer | None, CustomerPriceModule | None, OrderExplorer | None, AWBExplorer | None, dict]:
+def load_accepted_customer_price_order_runtime(manifest_path: Path, *, data_dir: Path | None = None, with_invoice_drafts: bool = False) -> tuple:
     """Build all Order Forms dependencies from the one verified accepted descriptor."""
     descriptor, artifact_path, manifest = _read_accepted_manifest(manifest_path)
     item_explorer = customer_explorer = price_module = order_explorer = None
+    awb_explorer = invoice_source = invoice_draft_service = None
     try:
         item_explorer = ItemExplorer.from_open_descriptor(descriptor, artifact_path, data_dir=data_dir)
         capabilities = manifest.get("capabilities")
@@ -192,6 +196,26 @@ def load_accepted_customer_price_order_runtime(manifest_path: Path, *, data_dir:
                 awb_explorer = None
         else:
             awb_explorer = None
+        if with_invoice_drafts and data_dir is not None:
+            candidate_source = candidate_service = None
+            try:
+                candidate_source = InvoiceConversionSource.from_open_descriptor(
+                    descriptor,
+                    artifact_path,
+                    current_price_lookup=price_module.invoice_current_price if price_module is not None else None,
+                )
+                if candidate_source.source_sha256 != manifest["accepted_artifact_sha256"]:
+                    raise ValueError
+                candidate_service = InvoiceDraftService(InvoiceDraftStore(data_dir))
+                invoice_source, invoice_draft_service = candidate_source, candidate_service
+            except (ReadOnlyInvoiceSourceError, OSError, ValueError, sqlite3.Error):
+                if candidate_source is not None:
+                    candidate_source.close()
+                if candidate_service is not None:
+                    candidate_service.store.close()
+                invoice_source = invoice_draft_service = None
+        if with_invoice_drafts:
+            return item_explorer, customer_explorer, price_module, order_explorer, awb_explorer, invoice_source, invoice_draft_service, manifest
         return item_explorer, customer_explorer, price_module, order_explorer, awb_explorer, manifest
     except (OSError, ValueError, sqlite3.Error) as error:
         raise RuntimeContractError("refusing invalid customer-price-order accepted artifact") from None
@@ -239,9 +263,13 @@ def main() -> None:
     except RuntimeContractError as error:
         parser.error(str(error))
     recovery_authorizer, recovery_service = recovery_test_mode(data_dir=data_dir or Path("."))
-    item_explorer, customer_explorer, customer_price_module, order_explorer, awb_explorer, manifest = load_accepted_customer_price_order_runtime(args.manifest, data_dir=data_dir)
+    item_explorer, customer_explorer, customer_price_module, order_explorer, awb_explorer, invoice_source, invoice_draft_service, manifest = load_accepted_customer_price_order_runtime(args.manifest, data_dir=data_dir, with_invoice_drafts=True)
     def close_core_modules_for_recovery() -> None:
         """Maintenance boundary: no Core SQLite connection survives a generation switch."""
+        if invoice_draft_service is not None:
+            invoice_draft_service.store.close()
+        if invoice_source is not None:
+            invoice_source.close()
         if awb_explorer is not None:
             awb_explorer.close()
         if order_explorer is not None:
@@ -255,6 +283,8 @@ def main() -> None:
     try:
         server = ThreadingHTTPServer((args.host, args.port), make_handler(
             item_explorer, manifest, customer_explorer, customer_price_module, order_explorer, awb_explorer,
+            invoice_source=invoice_source, invoice_draft_service=invoice_draft_service,
+            accepted_snapshot_sha256=manifest["accepted_artifact_sha256"],
             customer_lan_ingress=args.container_ingress,
             allowed_mutation_origins=mutation_origins,
             recovery_authorizer=recovery_authorizer, recovery_service=recovery_service,
