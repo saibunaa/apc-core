@@ -363,8 +363,8 @@ class ProgramShellTests(unittest.TestCase):
             'id="customer-code-options"', 'function commitCustomerCode(', 'textContent=', 'annotation',
         ):
             self.assertIn(marker, html)
-        self.assertIn('href="orders/"', _menu_html_body())
-        self.assertIn("<h2>Orders</h2>", _menu_html_body())
+        self.assertIn('href="order-invoice/"', _menu_html_body())
+        self.assertIn("<h2>Order/Invoice</h2>", _menu_html_body())
         self.assertNotIn("Order work will appear here.", _menu_html_body())
         self.assertNotIn('<div class="card soon"><div><h2>Orders</h2>', _menu_html_body())
         self.assertNotIn("innerHTML", html)
@@ -378,6 +378,13 @@ class ProgramShellTests(unittest.TestCase):
         html = module._order_explorer_html()
         self.assertIn("templateFor(code)", html)
         self.assertIn("$('#customer-code').value=data.customer_id", html)
+
+    def test_main_menu_replaces_orders_with_the_shared_order_invoice_workspace(self):
+        html = _menu_html_body()
+        self.assertIn('class="card mint" href="order-invoice/"', html)
+        self.assertIn("<h2>Order/Invoice</h2>", html)
+        self.assertNotIn('href="orders/"', html)
+        self.assertNotIn("<h2>Orders</h2>", html)
 
 
 if __name__ == "__main__":

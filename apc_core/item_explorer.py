@@ -18,6 +18,7 @@ from apc_core.invoice_draft_builder import build_invoice_draft
 from apc_core.invoice_draft_previews import InvoiceDraftPreviewRegistry
 from apc_core.invoice_draft_ui import invoice_draft_html
 from apc_core.order_explorer import invoice_draft_handoff_html
+from apc_core.order_invoice_ui import order_invoice_html as _order_invoice_html
 
 
 _PRIVATE_LAN_NETWORKS = (
@@ -766,7 +767,7 @@ def _menu_html_body(*, customer_available: bool = True, customer_prices_availabl
         )
     body = body.replace(
         '<section class="grid" aria-label="APC Core modules">',
-        '<section class="grid" aria-label="APC Core modules">' + ('<a class="card mint" href="orders/"><div><span class="label">Read-only</span><h2>Orders</h2><p>Open and review saved order forms and customer templates.</p></div><span class="open">Open Orders →</span></a>' if orders_available else ''),
+        '<section class="grid" aria-label="APC Core modules">' + ('<a class="card mint" href="order-invoice/"><div><span class="label">Read-only</span><h2>Order/Invoice</h2><p>Browse source orders, source invoices, and local Core drafts without linking them.</p></div><span class="open">Open Order/Invoice →</span></a>' if orders_available else ''),
         1,
     )
     if invoice_available:
@@ -888,6 +889,7 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
     )
     invoice_previews = InvoiceDraftPreviewRegistry() if invoice_available else None
     invoice_page = invoice_html if type(invoice_html) is str else invoice_draft_html()
+    order_invoice_available = order_explorer is not None or source_invoice_explorer is not None or invoice_draft_service is not None
 
     def _invoice_public_proposal(proposal):
         """Keep AWB resolution values server-held while exposing a draft review shape."""
@@ -982,12 +984,15 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
             if customer_explorer is not None and customer_read_path and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
                 self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer access is loopback-only unless customer LAN ingress is enabled"})
                 return
-            if parsed.path == "/order-invoice/api/browse" and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
+            if parsed.path in {"/order-invoice/", "/order-invoice/api/browse"} and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
                 self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer access is loopback-only unless customer LAN ingress is enabled"})
                 return
             if parsed.path == "/":
-                body = _menu_html(customer_available=customer_explorer is not None, customer_prices_available=customer_price_module is not None, orders_available=order_explorer is not None, awb_available=awb_explorer is not None, invoice_available=invoice_available).encode("utf-8")
+                body = _menu_html(customer_available=customer_explorer is not None, customer_prices_available=customer_price_module is not None, orders_available=order_invoice_available, awb_available=awb_explorer is not None, invoice_available=invoice_available).encode("utf-8")
                 self.send_response(HTTPStatus.OK); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
+            if parsed.path == "/order-invoice/" and order_invoice_available:
+                self._send_html(HTTPStatus.OK, _staff_identity_shell(_order_invoice_html()))
+                return
             if order_explorer is not None and parsed.path == "/orders":
                 self.send_response(HTTPStatus.PERMANENT_REDIRECT)
                 self.send_header("Location", "orders/")
