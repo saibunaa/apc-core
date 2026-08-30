@@ -170,6 +170,20 @@ class InvoiceConversionSourceTests(unittest.TestCase):
             finally:
                 __import__("os").close(descriptor)
 
+    def test_initialization_opens_pinned_descriptor_as_immutable_read_only_uri(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = self.make_source(Path(temporary))
+            with patch(
+                "apc_core.invoice_conversion_source.sqlite3.connect", wraps=sqlite3.connect
+            ) as connect:
+                reader = InvoiceConversionSource(source)
+            try:
+                uri = connect.call_args.args[0]
+                self.assertRegex(uri, r"^file:/proc/self/fd/\d+\?mode=ro&immutable=1$")
+                self.assertTrue(connect.call_args.kwargs["uri"])
+            finally:
+                reader.close()
+
     def test_initialization_failure_closes_opened_source_descriptor(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = self.make_source(Path(temporary), include_schema=False)

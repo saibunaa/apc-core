@@ -67,7 +67,7 @@ class InvoiceConversionSource:
             raise ReadOnlyInvoiceSourceError("invoice source must be a regular SQLite file")
         self._lock = threading.RLock()
         self._connection = sqlite3.connect(
-            f"file:/proc/self/fd/{descriptor}?mode=ro",
+            f"file:/proc/self/fd/{descriptor}?mode=ro&immutable=1",
             uri=True,
             check_same_thread=False,
         )
