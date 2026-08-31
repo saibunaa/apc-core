@@ -1,4 +1,5 @@
 import inspect
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -75,6 +76,36 @@ class TestOrderInvoiceWorkspaceUi(unittest.TestCase):
 
         self.assertNotIn('id="open-packing-drawer"', order_invoice_html())
         self.assertIn('id="open-packing-drawer"', order_invoice_html(include_fixture_drawer=True))
+
+    def test_selecting_a_new_browse_result_clears_the_prior_line_page_before_selection(self):
+        from apc_core.order_invoice_ui import order_invoice_html
+
+        html = order_invoice_html()
+        self.assertIn("function clearLinePage()", html)
+        selection_start = html.index("button.addEventListener('click'", html.index('function render(payload)'))
+        selection_end = html.index('});row.append(button)', selection_start)
+        selection = html[selection_start:selection_end]
+        self.assertLess(selection.index('clearLinePage()'), selection.index('selected=record'))
+
+    def test_clearing_a_prior_line_page_resets_the_line_pager_before_a_new_selection(self):
+        source_path = Path(__file__).parents[1] / "apc_core" / "order_invoice_ui.py"
+        harness = r'''
+const fs=require('fs');
+const source=fs.readFileSync(process.argv[1], 'utf8');
+const match=source.match(/function clearLinePage\(\)\{([^}]*)\}/);
+if(!match) throw new Error('clearLinePage missing');
+let linePage={offset:250};
+let currentOffset=250;
+const lineWindow={cleared:0,replaceChildren(){this.cleared+=1}};
+const detail={textContent:'Opened prior lines'};
+const pageJump={value:'2'};
+const previousPage={disabled:false};
+const nextPage={disabled:false};
+const clearLinePage=eval('()=>{'+match[1]+'}');
+clearLinePage();
+if(linePage!==null || currentOffset!==0 || pageJump.value!=='1' || !previousPage.disabled || !nextPage.disabled || lineWindow.cleared!==1 || detail.textContent!=='') throw new Error('stale line pager state remained');
+'''
+        subprocess.run(["node", "-e", harness, str(source_path)], check=True, capture_output=True, text=True)
 
     def test_handler_serves_shared_workspace_without_adding_a_mutation_route(self):
         from apc_core.item_explorer import make_handler
