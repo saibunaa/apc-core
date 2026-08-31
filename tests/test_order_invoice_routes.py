@@ -103,6 +103,19 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
         request.do_GET()
         return statuses, json.loads(request.wfile.getvalue())
 
+    def test_workspace_hides_core_drafts_when_handler_has_no_draft_service(self):
+        request, statuses = self.handler()
+        request.path = "/order-invoice/"
+
+        request.do_GET()
+
+        self.assertEqual([HTTPStatus.OK], statuses)
+        html = request.wfile.getvalue().decode("utf-8")
+        self.assertIn("Source Orders", html)
+        self.assertIn("Source Invoices", html)
+        self.assertNotIn("Core Drafts", html)
+        self.assertNotIn("local draft review", html)
+
     def test_browse_denies_private_lan_client_without_customer_lan_ingress_before_reading(self):
         source = _BrowseOrderSource()
         request, statuses = self.handler(order_source=source)
