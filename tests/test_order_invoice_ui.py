@@ -41,7 +41,7 @@ class TestOrderInvoiceWorkspaceUi(unittest.TestCase):
         self.assertNotIn('method:', html)
         self.assertNotIn("fetch('/order-invoice/api/browse", html)
         self.assertIn("fetch('api/browse?type='", html)
-        self.assertIn("event.target.click();openSelected()", html)
+        self.assertIn("button.setAttribute('aria-pressed','true')", html)
         for forbidden in ('Save', 'Issue', 'Print', 'Export', 'AWB Save', 'legacy-write'):
             self.assertNotIn(forbidden, html)
 
@@ -57,11 +57,11 @@ class TestOrderInvoiceWorkspaceUi(unittest.TestCase):
             "api/source-orders/",
             "openSourceOrder",
             "renderLinePage",
-            "function render(payload){results.replaceChildren();selected=null;linePage=null;lineWindow.replaceChildren();detail.textContent=''",
-            "event.key===' '",
-            'event.preventDefault()',
-            "toggleLanguage()",
-            "currentOffset",
+            "function clearLinePage()",
+            'id="order-invoice-language-toggle"',
+            "languageToggle.addEventListener('click',toggleLanguage)",
+            "browseOffset",
+            "lineOffset",
             "next_offset",
         ):
             self.assertIn(marker, html)
@@ -87,25 +87,38 @@ class TestOrderInvoiceWorkspaceUi(unittest.TestCase):
         selection = html[selection_start:selection_end]
         self.assertLess(selection.index('clearLinePage()'), selection.index('selected=record'))
 
-    def test_clearing_a_prior_line_page_resets_the_line_pager_before_a_new_selection(self):
-        source_path = Path(__file__).parents[1] / "apc_core" / "order_invoice_ui.py"
-        harness = r'''
-const fs=require('fs');
-const source=fs.readFileSync(process.argv[1], 'utf8');
-const match=source.match(/function clearLinePage\(\)\{([^}]*)\}/);
-if(!match) throw new Error('clearLinePage missing');
-let linePage={offset:250};
-let currentOffset=250;
-const lineWindow={cleared:0,replaceChildren(){this.cleared+=1}};
-const detail={textContent:'Opened prior lines'};
-const pageJump={value:'2'};
-const previousPage={disabled:false};
-const nextPage={disabled:false};
-const clearLinePage=eval('()=>{'+match[1]+'}');
-clearLinePage();
-if(linePage!==null || currentOffset!==0 || pageJump.value!=='1' || !previousPage.disabled || !nextPage.disabled || lineWindow.cleared!==1 || detail.textContent!=='') throw new Error('stale line pager state remained');
-'''
-        subprocess.run(["node", "-e", harness, str(source_path)], check=True, capture_output=True, text=True)
+    def test_clearing_a_prior_line_page_resets_only_line_state_before_a_new_selection(self):
+        from apc_core.order_invoice_ui import order_invoice_html
+
+        html = order_invoice_html()
+        self.assertIn("function clearLinePage(){linePage=null;lineOffset=0;lineWindow.replaceChildren();detail.textContent=''}", html)
+        self.assertIn('browseOffset=0;browseHasNext=false;clearLinePage()', html)
+
+    def test_workspace_uses_accessible_tabs_safe_arrow_handling_and_visible_language_toggle(self):
+        from apc_core.order_invoice_ui import order_invoice_html
+
+        html = order_invoice_html()
+        self.assertIn('id="order-invoice-tab-source-order"', html)
+        self.assertIn('aria-controls="order-invoice-tabpanel"', html)
+        self.assertIn('id="order-invoice-tabpanel"', html)
+        self.assertIn('role="tabpanel"', html)
+        self.assertIn('id="order-invoice-language-toggle"', html)
+        self.assertIn('aria-pressed="false"', html)
+        self.assertIn("event.target.getAttribute('role')==='tab'", html)
+
+    def test_workspace_uses_pressed_result_state_compact_announcements_and_distinct_pagers(self):
+        from apc_core.order_invoice_ui import order_invoice_html
+
+        html = order_invoice_html()
+        self.assertIn("button.setAttribute('aria-pressed','false')", html)
+        self.assertIn("button.setAttribute('aria-pressed','true')", html)
+        self.assertNotIn('id="order-invoice-line-window" class="detail" aria-live="polite"', html)
+        self.assertIn('id="order-invoice-status" class="meta" aria-live="polite"', html)
+        self.assertIn('browseOffset', html)
+        self.assertIn('lineOffset', html)
+        self.assertIn('browseHasNext', html)
+        self.assertIn('nextPage.disabled=lineMode?linePage.next_offset===null:!browseHasNext', html)
+        self.assertNotIn('currentOffset', html)
 
     def test_handler_serves_shared_workspace_without_adding_a_mutation_route(self):
         from apc_core.item_explorer import make_handler
