@@ -225,7 +225,7 @@ def load_accepted_customer_price_order_runtime(manifest_path: Path, *, data_dir:
                 invoice_source = invoice_draft_service = None
         if with_invoice_drafts:
             return item_explorer, customer_explorer, price_module, order_explorer, awb_explorer, invoice_source, invoice_draft_service, manifest
-        return item_explorer, customer_explorer, price_module, order_explorer, awb_explorer, manifest
+        return item_explorer, customer_explorer, price_module, order_explorer, awb_explorer, None, None, manifest
     except (OSError, ValueError, sqlite3.Error) as error:
         if item_explorer is None and source_invoice_explorer is not None:
             source_invoice_explorer.close()

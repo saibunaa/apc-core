@@ -522,8 +522,10 @@ class TestOrderInvoiceRuntimeLifecycle(unittest.TestCase):
                      patch.object(server.SourceInvoiceExplorer, "from_open_descriptor", return_value=reader) as reader_factory:
                     runtime = server.load_accepted_customer_price_order_runtime(Path(directory) / "manifest.json")
 
-                self.assertEqual(6, len(runtime))
+                self.assertEqual(8, len(runtime))
                 self.assertIs(runtime[0], item)
+                self.assertIsNone(runtime[5])
+                self.assertIsNone(runtime[6])
                 item_factory.assert_called_once_with(descriptor, artifact, data_dir=None)
                 reader_factory.assert_called_once_with(descriptor, artifact)
                 self.assertIs(reader, item.source_invoice_explorer)
