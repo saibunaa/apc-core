@@ -242,6 +242,11 @@ def allowed_mutation_origins(*, container_ingress: bool) -> frozenset[str] | Non
     return origins or None
 
 
+def invoice_drafts_enabled() -> bool:
+    """Draft persistence is opt-in: source browsing must not migrate Core SQLite at startup."""
+    return os.environ.get("APC_CORE_ENABLE_INVOICE_DRAFTS") == "1"
+
+
 def recovery_test_mode(*, data_dir: Path) -> tuple[RecoveryAuthorizer | None, RecoveryService | None]:
     """Enable the recovery panel only for an explicitly PIN-configured isolated test process."""
     pin = os.environ.get("APC_CORE_RECOVERY_TEST_PIN")
@@ -274,7 +279,7 @@ def main() -> None:
     except RuntimeContractError as error:
         parser.error(str(error))
     recovery_authorizer, recovery_service = recovery_test_mode(data_dir=data_dir or Path("."))
-    item_explorer, customer_explorer, customer_price_module, order_explorer, awb_explorer, invoice_source, invoice_draft_service, manifest = load_accepted_customer_price_order_runtime(args.manifest, data_dir=data_dir, with_invoice_drafts=True)
+    item_explorer, customer_explorer, customer_price_module, order_explorer, awb_explorer, invoice_source, invoice_draft_service, manifest = load_accepted_customer_price_order_runtime(args.manifest, data_dir=data_dir, with_invoice_drafts=invoice_drafts_enabled())
     def close_core_modules_for_recovery() -> None:
         """Maintenance boundary: no Core SQLite connection survives a generation switch."""
         if invoice_draft_service is not None:
