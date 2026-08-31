@@ -40,3 +40,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_invoice_draft_reconcili
 ```
 
 It verifies draft-only preview/save provenance, explicit staff resolution of opaque AWB conflicts, idempotent replay, and source-hash mismatch denial. It does **not** issue or number invoices, approve, print, export, account, sync, write AWB or legacy data, access MDB/NAS/live data, or claim deployment or production readiness.
+
+## Shared Order/Invoice workspace
+
+When its bounded readers are available, the main menu opens `Order/Invoice`: a keyboard-first browser for **SOURCE ORDER · READ-ONLY**, **SOURCE INVOICE · READ-ONLY**, and **CORE DRAFT · LOCAL** records. It uses only `GET /order-invoice/api/browse`; it has no source mutation controls and does not infer links between source orders and source invoices. Existing `/orders/` and `/invoices/` routes remain compatible.

@@ -18,6 +18,14 @@ from apc_core.invoice_draft_builder import build_invoice_draft
 from apc_core.invoice_draft_previews import InvoiceDraftPreviewRegistry
 from apc_core.invoice_draft_ui import invoice_draft_html
 from apc_core.order_explorer import invoice_draft_handoff_html
+from apc_core.order_invoice_ui import order_invoice_html as _order_invoice_html
+from apc_core.order_invoice_workspace import (
+    map_browse_page,
+    map_core_draft_browse,
+    map_source_invoice_browse,
+    map_source_order,
+    map_source_order_browse,
+)
 
 
 _PRIVATE_LAN_NETWORKS = (
@@ -347,6 +355,7 @@ class ItemExplorer:
         self.source_path = Path(source_path)
         self.data_dir = Path(data_dir or os.environ.get("APC_CORE_DATA_DIR", "state"))
         self._store: CoreStore | None = None
+        self._source_invoice_explorer = None
         descriptor = os.open(self.source_path, os.O_RDONLY | os.O_NOFOLLOW)
         try:
             self._initialize_from_descriptor(descriptor)
@@ -357,6 +366,7 @@ class ItemExplorer:
     def from_open_descriptor(cls, descriptor: int, source_path: Path, data_dir: Path | None = None) -> "ItemExplorer":
         explorer = cls.__new__(cls)
         explorer.source_path, explorer.data_dir, explorer._store = Path(source_path), Path(data_dir or os.environ.get("APC_CORE_DATA_DIR", "state")), None
+        explorer._source_invoice_explorer = None
         explorer._initialize_from_descriptor(descriptor)
         return explorer
 
@@ -387,9 +397,25 @@ class ItemExplorer:
 
     def close(self) -> None:
         with self._lock:
-            self._connection.close()
-            if self._store is not None:
-                self._store.close()
+            try:
+                self._connection.close()
+                if self._store is not None:
+                    self._store.close()
+            finally:
+                if self._source_invoice_explorer is not None:
+                    self._source_invoice_explorer.close()
+                    self._source_invoice_explorer = None
+
+    def attach_source_invoice_explorer(self, reader) -> None:
+        """Transfer ownership of one accepted-descriptor invoice reader to this explorer."""
+        if self._source_invoice_explorer is not None:
+            raise ValueError("source invoice explorer is already attached")
+        self._source_invoice_explorer = reader
+
+    @property
+    def source_invoice_explorer(self):
+        """Optional accepted descriptor-pinned reader owned by this lifecycle."""
+        return self._source_invoice_explorer
 
     def _auxiliary_item_values(self) -> tuple[dict[str, dict[str, object]], set[str]]:
         values: dict[str, dict[str, object]] = {}
@@ -748,7 +774,7 @@ def _menu_html_body(*, customer_available: bool = True, customer_prices_availabl
         )
     body = body.replace(
         '<section class="grid" aria-label="APC Core modules">',
-        '<section class="grid" aria-label="APC Core modules">' + ('<a class="card mint" href="orders/"><div><span class="label">Read-only</span><h2>Orders</h2><p>Open and review saved order forms and customer templates.</p></div><span class="open">Open Orders →</span></a>' if orders_available else ''),
+        '<section class="grid" aria-label="APC Core modules">' + ('<a class="card mint" href="order-invoice/"><div><span class="label">Read-only</span><h2>Order/Invoice</h2><p>Browse source orders, source invoices, and local Core drafts without linking them.</p></div><span class="open">Open Order/Invoice →</span></a>' if orders_available else ''),
         1,
     )
     if invoice_available:
@@ -857,7 +883,7 @@ def _order_explorer_html(*, invoice_available: bool = False) -> str:
     return html.replace("<body>", "<body>" + (invoice_draft_handoff_html() if invoice_available else ""), 1)
 
 
-def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None, customer_price_module=None, order_explorer=None, awb_explorer=None, *, invoice_source=None, invoice_draft_service=None, invoice_html: str | None = None, accepted_snapshot_sha256: str | None = None, customer_lan_ingress: bool = False, allowed_mutation_origins: frozenset[str] | None = None, recovery_authorizer=None, recovery_service=None, recovery_maintenance=None):
+def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None, customer_price_module=None, order_explorer=None, awb_explorer=None, *, source_invoice_explorer=None, invoice_source=None, invoice_draft_service=None, invoice_html: str | None = None, accepted_snapshot_sha256: str | None = None, customer_lan_ingress: bool = False, allowed_mutation_origins: frozenset[str] | None = None, recovery_authorizer=None, recovery_service=None, recovery_maintenance=None):
     # A request holds this for its full lifetime. Recovery therefore cannot close/swap
     # Core SQLite while an ordinary request is reading or writing it.
     request_gate = threading.RLock()
@@ -870,6 +896,7 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
     )
     invoice_previews = InvoiceDraftPreviewRegistry() if invoice_available else None
     invoice_page = invoice_html if type(invoice_html) is str else invoice_draft_html()
+    order_invoice_available = order_explorer is not None or source_invoice_explorer is not None or invoice_draft_service is not None
 
     def _invoice_public_proposal(proposal):
         """Keep AWB resolution values server-held while exposing a draft review shape."""
@@ -964,9 +991,15 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
             if customer_explorer is not None and customer_read_path and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
                 self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer access is loopback-only unless customer LAN ingress is enabled"})
                 return
+            if (parsed.path in {"/order-invoice/", "/order-invoice/api/browse"} or parsed.path.startswith("/order-invoice/api/source-orders/")) and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
+                self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer access is loopback-only unless customer LAN ingress is enabled"})
+                return
             if parsed.path == "/":
-                body = _menu_html(customer_available=customer_explorer is not None, customer_prices_available=customer_price_module is not None, orders_available=order_explorer is not None, awb_available=awb_explorer is not None, invoice_available=invoice_available).encode("utf-8")
+                body = _menu_html(customer_available=customer_explorer is not None, customer_prices_available=customer_price_module is not None, orders_available=order_invoice_available, awb_available=awb_explorer is not None, invoice_available=invoice_available).encode("utf-8")
                 self.send_response(HTTPStatus.OK); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
+            if parsed.path == "/order-invoice/" and order_invoice_available:
+                self._send_html(HTTPStatus.OK, _staff_identity_shell(_order_invoice_html()))
+                return
             if order_explorer is not None and parsed.path == "/orders":
                 self.send_response(HTTPStatus.PERMANENT_REDIRECT)
                 self.send_header("Location", "orders/")
@@ -993,6 +1026,115 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
             if order_explorer is not None and parsed.path.startswith("/orders/api/customer-template/"):
                 template = order_explorer.customer_template(unquote(parsed.path.removeprefix("/orders/api/customer-template/")))
                 self._send_json(HTTPStatus.OK, template) if template is not None else self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                return
+            if order_explorer is not None and parsed.path.startswith("/order-invoice/api/source-orders/"):
+                try:
+                    query = parse_qs(parsed.query, keep_blank_values=True)
+                    if set(query) != {"limit", "offset"}:
+                        raise ValueError
+                    limits, offsets = query.get("limit", []), query.get("offset", [])
+                    if len(limits) != 1 or len(offsets) != 1:
+                        raise ValueError
+                    if not re.fullmatch(r"[0-9]+", limits[0]) or not re.fullmatch(r"[0-9]+", offsets[0]):
+                        raise ValueError
+                    limit, offset = int(limits[0]), int(offsets[0])
+                    if not 1 <= limit <= 250 or offset > 9_223_372_036_854_775_807:
+                        raise ValueError
+                    order_id = unquote(parsed.path.removeprefix("/order-invoice/api/source-orders/"))
+                    if not order_id:
+                        raise ValueError
+                    page = order_explorer.open_order(order_id, limit=limit, offset=offset)
+                    if page is not None:
+                        dto = map_source_order(
+                            page,
+                            source_sha256=order_explorer.source_sha256,
+                            strict_served_page=True,
+                            requested_limit=limit,
+                            requested_offset=offset,
+                            requested_order_id=order_id,
+                        )
+                except (KeyError, OverflowError, TypeError, ValueError, sqlite3.Error):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid order detail query"})
+                else:
+                    if page is None:
+                        self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                    else:
+                        lines = [dict(line) for line in dto.line_page]
+                        self._send_json(HTTPStatus.OK, {
+                            "record_type": dto.record_type, "record_id": dto.record_id,
+                            "order_id": dto.record_id.removeprefix("source_order:"), "order_date": dto.document_date,
+                            "customer_id": dto.customer_id, "customer_name": dto.customer_name,
+                            "lines": lines, "total": dto.line_total, "limit": dto.line_limit,
+                            "offset": dto.line_offset, "has_more": dto.has_more, "next_offset": dto.next_offset,
+                        })
+                return
+            if parsed.path == "/order-invoice/api/browse":
+                try:
+                    query = parse_qs(parsed.query, keep_blank_values=True)
+                    if set(query) != {"type", "query", "limit", "offset"}:
+                        raise ValueError
+                    types, searches = query.get("type", []), query.get("query", [])
+                    limits, offsets = query.get("limit", []), query.get("offset", [])
+                    if len(types) != 1 or len(searches) != 1 or len(limits) != 1 or len(offsets) != 1 or not searches[0]:
+                        raise ValueError
+                    record_type, search = types[0], searches[0]
+                    if not re.fullmatch(r"[0-9]+", limits[0]) or not re.fullmatch(r"[0-9]+", offsets[0]):
+                        raise ValueError
+                    limit, offset = int(limits[0]), int(offsets[0])
+                    if not 1 <= limit <= 250 or offset > 9_223_372_036_854_775_807:
+                        raise ValueError
+                    if record_type == "source_order" and order_explorer is not None:
+                        page = order_explorer.browse_orders(search, limit=limit, offset=offset)
+                        browse_page = map_browse_page(page, row_key="orders", requested_limit=limit, requested_offset=offset)
+                        results = []
+                        for row in browse_page.rows:
+                            dto = map_source_order_browse(row)
+                            fields = dict(dto.fields)
+                            if not (
+                                fields["order_id"].startswith(search)
+                                or (fields["order_id"].isascii() and search.isascii() and fields["order_id"].lower().startswith(search.lower()))
+                            ):
+                                raise ValueError("source order browse result does not match query")
+                            results.append({"record_type": dto.record_type, "record_id": dto.record_id,
+                                            "order_id": fields["order_id"], "order_date": fields["order_date"],
+                                            "customer_id": fields["customer_id"]})
+                    elif record_type == "source_invoice" and source_invoice_explorer is not None:
+                        page = source_invoice_explorer.search_invoices(prefix=search, limit=limit, offset=offset)
+                        browse_page = map_browse_page(page, row_key="invoices", requested_limit=limit, requested_offset=offset)
+                        results = []
+                        for row in browse_page.rows:
+                            dto = map_source_invoice_browse(row)
+                            fields = dict(dto.fields)
+                            if not (
+                                fields["invoice_id"].startswith(search)
+                                or (fields["invoice_id"].isascii() and search.isascii() and fields["invoice_id"].lower().startswith(search.lower()))
+                            ):
+                                raise ValueError("source invoice browse result does not match query")
+                            results.append({"record_type": dto.record_type, "record_id": dto.record_id,
+                                            "source_invoice_number": fields["invoice_id"], "invoice_date": fields["invoice_date"],
+                                            "customer_id": fields["customer_id"], "customer_name": fields["customer_name"],
+                                            "slash_family": fields["slash_family"]})
+                    elif record_type == "core_draft" and invoice_draft_service is not None:
+                        page = invoice_draft_service.store.list_drafts(search, limit=limit, offset=offset)
+                        browse_page = map_browse_page(page, row_key="drafts", requested_limit=limit, requested_offset=offset)
+                        results = []
+                        for row in browse_page.rows:
+                            dto = map_core_draft_browse(row)
+                            fields = dict(dto.fields)
+                            if not (
+                                fields["draft_id"].startswith(search)
+                                or (fields["draft_id"].isascii() and search.isascii() and fields["draft_id"].lower().startswith(search.lower()))
+                            ):
+                                raise ValueError("Core draft browse result does not match query")
+                            results.append({"record_type": dto.record_type, "record_id": dto.record_id, "draft_id": fields["draft_id"],
+                                            "created_by": fields["created_by"], "created_at": fields["created_at"], "status": fields["status"]})
+                    else:
+                        raise ValueError
+                    self._send_json(HTTPStatus.OK, {"record_type": record_type, "total": browse_page.total, "limit": browse_page.limit,
+                                                     "offset": browse_page.offset, "has_more": browse_page.has_more,
+                                                     "next_offset": browse_page.next_offset, "results": results})
+                except (KeyError, OverflowError, TypeError, ValueError, sqlite3.Error):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid browse query"})
                 return
             if awb_explorer is not None and parsed.path == "/shipments":
                 self.send_response(HTTPStatus.PERMANENT_REDIRECT)

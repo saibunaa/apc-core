@@ -12,6 +12,7 @@ from .invoice_draft_service import InvoiceDraftService
 from .invoice_drafts import InvoiceDraftStore
 from .item_explorer import ItemExplorer, make_handler
 from .order_explorer import OrderExplorer
+from .source_invoice_explorer import SourceInvoiceExplorer, ReadOnlySourceInvoiceError
 from .awb_explorer import AWBExplorer, ReadOnlySourceContractError as AWBSourceContractError
 from .recovery import RecoveryAuthorizer, RecoveryService
 from .customer_explorer import CustomerExplorer
@@ -153,9 +154,17 @@ def load_accepted_customer_price_order_runtime(manifest_path: Path, *, data_dir:
     """Build all Order Forms dependencies from the one verified accepted descriptor."""
     descriptor, artifact_path, manifest = _read_accepted_manifest(manifest_path)
     item_explorer = customer_explorer = price_module = order_explorer = None
-    awb_explorer = invoice_source = invoice_draft_service = None
+    awb_explorer = invoice_source = invoice_draft_service = source_invoice_explorer = None
     try:
+        try:
+            source_invoice_explorer = SourceInvoiceExplorer.from_open_descriptor(descriptor, artifact_path)
+        except (ReadOnlySourceInvoiceError, OSError, ValueError, sqlite3.Error):
+            source_invoice_explorer = None
+        finally:
+            os.lseek(descriptor, 0, os.SEEK_SET)
         item_explorer = ItemExplorer.from_open_descriptor(descriptor, artifact_path, data_dir=data_dir)
+        if source_invoice_explorer is not None:
+            item_explorer.attach_source_invoice_explorer(source_invoice_explorer)
         capabilities = manifest.get("capabilities")
         def verified_capability(name: str) -> bool:
             capability = capabilities.get(name) if type(capabilities) is dict else None
@@ -218,6 +227,8 @@ def load_accepted_customer_price_order_runtime(manifest_path: Path, *, data_dir:
             return item_explorer, customer_explorer, price_module, order_explorer, awb_explorer, invoice_source, invoice_draft_service, manifest
         return item_explorer, customer_explorer, price_module, order_explorer, awb_explorer, manifest
     except (OSError, ValueError, sqlite3.Error) as error:
+        if item_explorer is None and source_invoice_explorer is not None:
+            source_invoice_explorer.close()
         raise RuntimeContractError("refusing invalid customer-price-order accepted artifact") from None
     finally:
         os.close(descriptor)
@@ -281,6 +292,10 @@ def main() -> None:
         item_explorer.close()
 
     try:
+        handler_kwargs = {}
+        source_invoice_explorer = item_explorer.source_invoice_explorer
+        if type(source_invoice_explorer) is SourceInvoiceExplorer:
+            handler_kwargs["source_invoice_explorer"] = source_invoice_explorer
         server = ThreadingHTTPServer((args.host, args.port), make_handler(
             item_explorer, manifest, customer_explorer, customer_price_module, order_explorer, awb_explorer,
             invoice_source=invoice_source, invoice_draft_service=invoice_draft_service,
@@ -289,6 +304,7 @@ def main() -> None:
             allowed_mutation_origins=mutation_origins,
             recovery_authorizer=recovery_authorizer, recovery_service=recovery_service,
             recovery_maintenance=close_core_modules_for_recovery if recovery_service is not None else None,
+            **handler_kwargs,
         ))
         print(f"APC Core Item Explorer listening on http://127.0.0.1:{args.port}")
         server.serve_forever()

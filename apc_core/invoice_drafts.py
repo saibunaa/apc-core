@@ -434,5 +434,31 @@ class InvoiceDraftStore:
     def audit_count(self) -> int:
         return int(self.connection.execute("SELECT COUNT(*) FROM invoice_draft_audit").fetchone()[0])
 
+    @_locked
+    def list_drafts(self, query: object, *, limit: object = 50, offset: object = 0) -> dict[str, object]:
+        """Read local draft summaries only; provenance and allocations stay private."""
+        if type(query) is not str or not query:
+            raise ValueError("invalid draft browse query")
+        if type(limit) is not int or type(offset) is not int:
+            raise ValueError("invalid draft page")
+        page_limit, page_offset = max(1, min(limit, 250)), max(0, offset)
+        prefix = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        where = " WHERE draft_id LIKE ? ESCAPE '\\'"
+        total = int(self.connection.execute("SELECT COUNT(*) FROM invoice_drafts" + where, (prefix,)).fetchone()[0])
+        rows = self.connection.execute(
+            "SELECT draft_id,created_by,created_at,status FROM invoice_drafts" + where
+            + " ORDER BY created_at DESC,draft_id LIMIT ? OFFSET ?",
+            (prefix, page_limit, page_offset),
+        ).fetchall()
+        next_offset = page_offset + page_limit
+        return {
+            "total": total, "limit": page_limit, "offset": page_offset,
+            "has_more": next_offset < total, "next_offset": next_offset if next_offset < total else None,
+            "drafts": [
+                {"draft_id": row[0], "created_by": row[1], "created_at": row[2], "status": row[3]}
+                for row in rows
+            ],
+        }
+
     def close(self) -> None:
         self.connection.close()
