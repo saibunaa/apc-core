@@ -137,7 +137,10 @@ class TestOrderExplorerContract(unittest.TestCase):
             self.assertEqual("", order["lines"][2]["qty"])
             self.assertEqual("สินค้าซ้ำ", order["lines"][0]["description_th"])
             self.assertEqual(
-                {"line_no", "item_id", "qty", "description_th", "reference", "description_en", "is_annotation"},
+                {
+                    "line_no", "item_id", "qty", "description_th", "description_th_provenance",
+                    "sub_customer", "description_en", "description_en_provenance", "is_annotation",
+                },
                 set(order["lines"][0]),
             )
             self.assertIsNone(explorer.open_order("ORD/2026/001/"))
@@ -146,6 +149,62 @@ class TestOrderExplorerContract(unittest.TestCase):
             self.assertIsNone(explorer.open_order(42))
             explorer.close()
 
+    def test_open_order_places_blank_and_non_numeric_line_numbers_after_numeric_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self.make_snapshot(Path(tmp))
+            connection = sqlite3.connect(source)
+            connection.executemany(
+                'INSERT INTO "MainDB__ORDER_ITEM" VALUES (?, ?, ?, ?)',
+                [
+                    ("ORD/2026/001", "", "IT/BLANK", "1"),
+                    ("ORD/2026/001", "note", "IT/NOTE", "1"),
+                ],
+            )
+            connection.commit()
+            connection.close()
+            explorer = self.explorer_class()(source)
+            try:
+                lines = explorer.open_order("ORD/2026/001")["lines"]
+            finally:
+                explorer.close()
+
+        self.assertEqual(["2", "3", "10", "", "note"], [line["line_no"] for line in lines])
+
+    def test_open_order_exposes_sub_customer_and_labels_description_provenance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self.make_snapshot(Path(tmp))
+            connection = sqlite3.connect(source)
+            for column in ("Description TH", "Description2", "SubCust"):
+                connection.execute(f'ALTER TABLE "MainDB__ORDER_ITEM" ADD COLUMN "{column}" TEXT')
+            connection.execute(
+                'UPDATE "MainDB__ORDER_ITEM" SET "Description TH" = ?, "Description2" = ?, "SubCust" = ? '
+                'WHERE "Order No" = ? AND "Line No" = ?',
+                ("ชื่อจากออเดอร์", "Order-specific English", "A1", "ORD/2026/001", "2"),
+            )
+            connection.commit()
+            connection.close()
+            explorer = self.explorer_class()(source)
+            try:
+                lines = explorer.open_order("ORD/2026/001")["lines"]
+            finally:
+                explorer.close()
+
+        self.assertEqual("A1", lines[0]["sub_customer"])
+        self.assertEqual("ชื่อจากออเดอร์", lines[0]["description_th"])
+        self.assertEqual("order", lines[0]["description_th_provenance"])
+        self.assertEqual("Order-specific English", lines[0]["description_en"])
+        self.assertEqual("order", lines[0]["description_en_provenance"])
+        self.assertEqual("item_master", lines[1]["description_th_provenance"])
+        self.assertEqual("item_master", lines[1]["description_en_provenance"])
+        self.assertEqual(
+            {
+                "line_no", "item_id", "qty", "description_th", "description_th_provenance",
+                "sub_customer", "description_en", "description_en_provenance", "is_annotation",
+            },
+            set(lines[0]),
+        )
+        self.assertNotIn("reference", lines[0])
+
     def test_open_order_prefers_per_order_text_and_preserves_annotation_rows_when_export_kept_legacy_columns(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = self.make_snapshot(Path(tmp))
@@ -153,8 +212,8 @@ class TestOrderExplorerContract(unittest.TestCase):
             for column in ('Description', 'Description TH', 'Description2', 'Note', 'Inv No', 'SubCust'):
                 connection.execute(f'ALTER TABLE "MainDB__ORDER_ITEM" ADD COLUMN "{column}" TEXT')
             connection.execute(
-                'UPDATE "MainDB__ORDER_ITEM" SET "Description TH" = ?, "Description2" = ?, "Inv No" = ? WHERE "Order No" = ? AND "Line No" = ?',
-                ('ชื่อเฉพาะออเดอร์', 'Order-specific English [X]', 'A5', 'ORD/2026/001', '2'),
+                'UPDATE "MainDB__ORDER_ITEM" SET "Description TH" = ?, "Description2" = ?, "Inv No" = ?, "SubCust" = ? WHERE "Order No" = ? AND "Line No" = ?',
+                ('ชื่อเฉพาะออเดอร์', 'Order-specific English [X]', 'A5', 'A1', 'ORD/2026/001', '2'),
             )
             connection.execute(
                 'UPDATE "MainDB__ORDER_ITEM" SET "Item ID" = ?, "Note" = ? WHERE "Order No" = ? AND "Line No" = ?',
@@ -165,7 +224,9 @@ class TestOrderExplorerContract(unittest.TestCase):
             lines = explorer.open_order('ORD/2026/001')['lines']
             self.assertEqual('ชื่อเฉพาะออเดอร์', lines[0]['description_th'])
             self.assertEqual('Order-specific English [X]', lines[0]['description_en'])
-            self.assertEqual('A5', lines[0]['reference'])
+            self.assertEqual('A1', lines[0]['sub_customer'])
+            self.assertEqual('order', lines[0]['description_th_provenance'])
+            self.assertEqual('order', lines[0]['description_en_provenance'])
             self.assertFalse(lines[0]['is_annotation'])
             self.assertEqual('', lines[2]['item_id'])
             self.assertEqual('', lines[2]['qty'])

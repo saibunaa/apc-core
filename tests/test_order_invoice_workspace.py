@@ -1,3 +1,4 @@
+import subprocess
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 import sqlite3
@@ -294,6 +295,90 @@ class TestOrderInvoiceWorkspaceContract(unittest.TestCase):
             pass
         else:
             raise AssertionError("render line page must be immutable")
+
+    def test_strict_source_order_page_keeps_sub_customer_and_description_provenance_for_rendering(self):
+        from apc_core.order_invoice_workspace import map_source_order
+
+        dto = map_source_order(
+            {
+                "order_id": "ORD/2026/001",
+                "order_date": "2026-08-29",
+                "customer_id": "C/001",
+                "customer_name": "Customer One",
+                "lines": [{
+                    "line_no": "2", "item_id": "ITEM-2", "qty": "5", "description_th": "ชื่อจากออเดอร์",
+                    "description_th_provenance": "order", "sub_customer": "A1",
+                    "description_en": "Order-specific English", "description_en_provenance": "order",
+                    "is_annotation": False,
+                }],
+                "total": 1, "limit": 1, "offset": 0, "has_more": False, "next_offset": None,
+            },
+            source_sha256="a" * 64,
+            strict_served_page=True,
+            requested_limit=1,
+            requested_offset=0,
+            requested_order_id="ORD/2026/001",
+        )
+
+        line = dict(dto.line_page[0])
+        self.assertEqual("A1", line["sub_customer"])
+        self.assertEqual("order", line["description_th_provenance"])
+        self.assertEqual("order", line["description_en_provenance"])
+        ui_source = (Path(__file__).parents[1] / "apc_core" / "order_invoice_ui.py").read_text(encoding="utf-8")
+        self.assertIn("Sub customer", ui_source)
+        self.assertIn("description_th_provenance", ui_source)
+        self.assertIn("description_en_provenance", ui_source)
+
+    def test_strict_source_order_page_rejects_unrecognized_description_provenance(self):
+        from apc_core.order_invoice_workspace import map_source_order
+
+        page = {
+            "order_id": "ORD/2026/001", "order_date": "2026-08-29", "customer_id": "C/001",
+            "customer_name": "Customer One", "lines": [{
+                "line_no": "2", "item_id": "ITEM-2", "qty": "5", "description_th": "ชื่อจากออเดอร์",
+                "description_th_provenance": "order", "sub_customer": "A1",
+                "description_en": "Order-specific English", "description_en_provenance": "order",
+                "is_annotation": False,
+            }],
+            "total": 1, "limit": 1, "offset": 0, "has_more": False, "next_offset": None,
+        }
+        for key, value in (("description_th_provenance", "unknown"), ("description_en_provenance", False)):
+            with self.subTest(key=key, value=value):
+                candidate = {**page, "lines": [{**page["lines"][0], key: value}]}
+                with self.assertRaises(ValueError):
+                    map_source_order(
+                        candidate,
+                        source_sha256="a" * 64,
+                        strict_served_page=True,
+                        requested_limit=1,
+                        requested_offset=0,
+                        requested_order_id="ORD/2026/001",
+                    )
+
+    def test_order_invoice_ui_renders_language_specific_description_provenance_and_sub_customer(self):
+        ui_path = Path(__file__).parents[1] / "apc_core" / "order_invoice_ui.py"
+        harness = r'''
+const fs=require('fs');
+const source=fs.readFileSync(process.argv[1], 'utf8');
+const match=source.match(/function renderLinePage\(payload\)\{[\s\S]*?(?=function toggleLanguage)/);
+if(!match) throw new Error('renderLinePage missing');
+let rendered=[];
+const lineWindow={dataset:{},replaceChildren(){rendered=[]},append(node){rendered.push(node)}};
+let currentLanguage='english';
+const selected={record_type:'source_order',order_id:'ORD/2026/001'};
+function sourceLineReference(){return 'safe'};
+const document={createElement(){return {dataset:{},addEventListener(){}}}};
+eval(match[0]);
+const payload={lines:[{line_no:'2',item_id:'ITEM-2',qty:'5',description_th:'ชื่อจากออเดอร์',description_th_provenance:'item_master',sub_customer:'A1',description_en:'Order English',description_en_provenance:'order'}]};
+renderLinePage(payload);
+const english=rendered[0].textContent;
+currentLanguage='thai';
+renderLinePage(payload);
+const thai=rendered[0].textContent;
+if(english!=='2 · ITEM-2 · 5 · Order English · Order description · Sub customer A1') throw new Error(english);
+if(thai!=='2 · ITEM-2 · 5 · ชื่อจากออเดอร์ · Item master description · Sub customer A1') throw new Error(thai);
+'''
+        subprocess.run(["node", "-e", harness, str(ui_path)], check=True, capture_output=True, text=True)
 
     def test_source_order_mapping_retains_bounded_page_metadata(self):
         from apc_core.order_invoice_workspace import map_source_order

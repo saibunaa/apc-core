@@ -24,8 +24,8 @@ class _BrowseOrderSource:
         return {
             "order_id": order_id, "order_date": "2026-08-29", "customer_id": "C/001", "customer_name": "Customer One",
             "lines": [
-                {"line_no": "0", "item_id": "ITEM-0", "qty": "1", "description_th": "ไทย", "reference": "", "description_en": "English", "is_annotation": False},
-                {"line_no": "1", "item_id": "ITEM-1", "qty": "2", "description_th": "ไทย 2", "reference": "", "description_en": "English 2", "is_annotation": False},
+                {"line_no": "0", "item_id": "ITEM-0", "qty": "1", "description_th": "ไทย", "description_th_provenance": "order", "sub_customer": "A1", "description_en": "English", "description_en_provenance": "order", "is_annotation": False},
+                {"line_no": "1", "item_id": "ITEM-1", "qty": "2", "description_th": "ไทย 2", "description_th_provenance": "item_master", "sub_customer": "", "description_en": "English 2", "description_en_provenance": "item_master", "is_annotation": False},
             ],
             "total": 1661, "limit": limit, "offset": offset, "has_more": True, "next_offset": 2,
         }
@@ -160,11 +160,13 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
         self.assertEqual(1661, payload["total"])
         self.assertEqual(2, len(payload["lines"]))
         self.assertEqual(
-            {"line_no", "item_id", "qty", "description_th", "reference", "description_en", "is_annotation"},
+            {
+                "line_no", "item_id", "qty", "description_th", "description_th_provenance",
+                "sub_customer", "description_en", "description_en_provenance", "is_annotation",
+            },
             set(payload["lines"][0]),
         )
         self.assertNotIn("source_sha256", repr(payload))
-        self.assertNotIn("provenance", repr(payload).lower())
 
     def test_open_source_order_accepts_actual_order_explorer_line_contract(self):
         from apc_core.order_explorer import OrderExplorer
@@ -182,7 +184,10 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
         self.assertEqual([HTTPStatus.OK], statuses)
         self.assertEqual(["2", "3"], [line["line_no"] for line in payload["lines"]])
         self.assertEqual(
-            {"line_no", "item_id", "qty", "description_th", "reference", "description_en", "is_annotation"},
+            {
+                "line_no", "item_id", "qty", "description_th", "description_th_provenance",
+                "sub_customer", "description_en", "description_en_provenance", "is_annotation",
+            },
             set(payload["lines"][0]),
         )
 
@@ -363,7 +368,8 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
     def test_open_source_order_rejects_hostile_cross_family_mutation_or_missing_line_identity(self):
         safe_line = {
             "line_no": "1", "item_id": "ITEM-1", "qty": "2", "description_th": "ไทย",
-            "reference": "", "description_en": "English", "is_annotation": False,
+            "description_th_provenance": "order", "sub_customer": "A1", "description_en": "English",
+            "description_en_provenance": "order", "is_annotation": False,
         }
         hostile_pages = (
             {"invoice_id": "INV/hostile"},

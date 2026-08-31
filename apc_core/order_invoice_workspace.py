@@ -20,7 +20,8 @@ _SOURCE_INVOICE_LINE_FIELDS = (
     "line_no", "item_id", "description", "qty", "price", "amount", "sub_customer"
 )
 _SOURCE_ORDER_LINE_FIELDS = (
-    "line_no", "item_id", "qty", "description_th", "reference", "description_en", "is_annotation"
+    "line_no", "item_id", "qty", "description_th", "description_th_provenance", "sub_customer",
+    "description_en", "description_en_provenance", "is_annotation"
 )
 
 
@@ -236,6 +237,14 @@ def map_source_order(
         allowed_keys=_SOURCE_ORDER_LINE_FIELDS if strict_served_page else None,
         require_exact_keys=strict_served_page,
     )
+    if strict_served_page:
+        for line in lines:
+            fields = dict(line)
+            if (
+                fields.get("description_th_provenance") not in {"order", "item_master"}
+                or fields.get("description_en_provenance") not in {"order", "item_master"}
+            ):
+                raise ValueError("invalid source order description provenance")
     total = _page_number(order.get("total", len(lines)), "line total", allow_none=False)
     next_offset = _page_number(order.get("next_offset"), "next offset", allow_none=True)
     if total is None or total < len(lines):

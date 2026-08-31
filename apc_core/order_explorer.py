@@ -229,19 +229,24 @@ class OrderExplorer:
             description = self._order_item_field("Description")
             description_en = self._order_item_field("Description2")
             note = self._order_item_field("Note")
-            inv_no = self._order_item_field("Inv No")
             sub_cust = self._order_item_field("SubCust")
             rows = self._connection.execute(
                 'SELECT oi."Line No", oi."Item ID", oi."Qty", '
                 f'CASE WHEN TRIM(COALESCE(oi."Item ID", \'\')) = \'\' AND TRIM(COALESCE({note}, \'\')) <> \'\' THEN {note} '
                 f'ELSE COALESCE(NULLIF({description_th}, \'\'), NULLIF({description}, \'\'), item."Description TH", \'\') END, '
-                f'COALESCE(NULLIF({inv_no}, \'\'), NULLIF({sub_cust}, \'\'), \'\'), '
+                f'CASE WHEN TRIM(COALESCE(oi."Item ID", \'\')) = \'\' AND TRIM(COALESCE({note}, \'\')) <> \'\' '
+                f'OR NULLIF({description_th}, \'\') IS NOT NULL OR NULLIF({description}, \'\') IS NOT NULL THEN \'order\' '
+                f'ELSE \'item_master\' END, '
+                f'COALESCE({sub_cust}, \'\'), '
                 f'COALESCE(NULLIF({description_en}, \'\'), item."Description", \'\'), '
+                f'CASE WHEN NULLIF({description_en}, \'\') IS NOT NULL THEN \'order\' ELSE \'item_master\' END, '
                 f'CASE WHEN TRIM(COALESCE(oi."Item ID", \'\')) = \'\' AND TRIM(COALESCE({note}, \'\')) <> \'\' THEN 1 ELSE 0 END '
                 'FROM "MainDB__ORDER_ITEM" AS oi '
                 'LEFT JOIN "MainDB__ITEM" AS item ON item."Item ID" = oi."Item ID" '
                 'WHERE oi."Order No" = ? '
-                'ORDER BY CAST(oi."Line No" AS INTEGER), oi."Line No" LIMIT ? OFFSET ?',
+                'ORDER BY CASE WHEN TRIM(COALESCE(oi."Line No", \'\')) <> \'\' '
+                'AND TRIM(oi."Line No") NOT GLOB \'*[^0-9]*\' THEN 0 ELSE 1 END, '
+                'CAST(oi."Line No" AS INTEGER), oi."Line No" LIMIT ? OFFSET ?',
                 (order_id, page_limit, page_offset),
             ).fetchall()
         lines = [
@@ -250,11 +255,11 @@ class OrderExplorer:
                 "item_id": _text(row[1]),
                 "qty": _text(row[2]),
                 "description_th": _text(row[3]),
-                # The legacy save paths disagree on whether this is Inv No or
-                # SubCust. Preserve the visible value without claiming meaning.
-                "reference": _text(row[4]),
-                "description_en": _text(row[5]),
-                "is_annotation": bool(row[6]),
+                "description_th_provenance": _text(row[4]),
+                "sub_customer": _text(row[5]),
+                "description_en": _text(row[6]),
+                "description_en_provenance": _text(row[7]),
+                "is_annotation": bool(row[8]),
             }
             for row in rows
         ]
