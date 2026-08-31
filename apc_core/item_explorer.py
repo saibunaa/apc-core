@@ -998,7 +998,7 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                 body = _menu_html(customer_available=customer_explorer is not None, customer_prices_available=customer_price_module is not None, orders_available=order_invoice_available, awb_available=awb_explorer is not None, invoice_available=invoice_available).encode("utf-8")
                 self.send_response(HTTPStatus.OK); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
             if parsed.path == "/order-invoice/" and order_invoice_available:
-                self._send_html(HTTPStatus.OK, _staff_identity_shell(_order_invoice_html()))
+                self._send_html(HTTPStatus.OK, _staff_identity_shell(_order_invoice_html(include_core_drafts=invoice_draft_service is not None)))
                 return
             if order_explorer is not None and parsed.path == "/orders":
                 self.send_response(HTTPStatus.PERMANENT_REDIRECT)

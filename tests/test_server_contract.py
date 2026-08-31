@@ -341,7 +341,7 @@ class ServerContractTests(unittest.TestCase):
              patch.object(server, "ThreadingHTTPServer", FakeServer):
             server.main()
 
-        loader.assert_called_once_with(Path("accepted.json"), data_dir=None, with_invoice_drafts=True)
+        loader.assert_called_once_with(Path("accepted.json"), data_dir=None, with_invoice_drafts=False)
         handler_factory.assert_called_once_with(
             items, manifest, customers, prices, orders, None,
             invoice_source=None, invoice_draft_service=None, accepted_snapshot_sha256=manifest["accepted_artifact_sha256"],
@@ -553,6 +553,16 @@ class ServerContractTests(unittest.TestCase):
             with patch.object(sys, "argv", ["server", "--manifest", "missing.json", "--host", "0.0.0.0", "--container-ingress"]):
                 with self.assertRaises(SystemExit):
                     server.main()
+
+    def test_invoice_drafts_are_disabled_without_an_explicit_runtime_opt_in(self):
+        from apc_core import server
+
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(server.invoice_drafts_enabled())
+        with patch.dict(os.environ, {"APC_CORE_ENABLE_INVOICE_DRAFTS": "0"}, clear=True):
+            self.assertFalse(server.invoice_drafts_enabled())
+        with patch.dict(os.environ, {"APC_CORE_ENABLE_INVOICE_DRAFTS": "1"}, clear=True):
+            self.assertTrue(server.invoice_drafts_enabled())
 
     def test_invoice_draft_dependencies_are_optional_and_use_only_the_validated_accepted_path(self):
         with tempfile.TemporaryDirectory() as tmp:

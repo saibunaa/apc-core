@@ -20,10 +20,8 @@ class TestOrderInvoiceWorkspaceUi(unittest.TestCase):
             'aria-modal="true"',
             'Source Orders',
             'Source Invoices',
-            'Core Drafts',
             'SOURCE ORDER · READ-ONLY',
             'SOURCE INVOICE · READ-ONLY',
-            'CORE DRAFT · LOCAL',
             'api/browse?type=',
             'textContent=',
             'replaceChildren()',
@@ -70,6 +68,13 @@ class TestOrderInvoiceWorkspaceUi(unittest.TestCase):
         self.assertNotIn("method:'PUT'", html)
         self.assertNotIn("method:'PATCH'", html)
         self.assertNotIn("method:'DELETE'", html)
+
+    def test_default_workspace_hides_core_drafts_until_explicitly_enabled(self):
+        from apc_core.order_invoice_ui import order_invoice_html
+
+        self.assertNotIn('Core Drafts', order_invoice_html())
+        self.assertNotIn('local draft review', order_invoice_html())
+        self.assertIn('Core Drafts', order_invoice_html(include_core_drafts=True))
 
     def test_default_workspace_excludes_fixture_packing_drawer(self):
         from apc_core.order_invoice_ui import order_invoice_html
@@ -125,7 +130,7 @@ class TestOrderInvoiceWorkspaceUi(unittest.TestCase):
 
         source = inspect.getsource(make_handler)
         self.assertIn('parsed.path == "/order-invoice/"', source)
-        self.assertIn('_order_invoice_html()', source)
+        self.assertIn('_order_invoice_html(include_core_drafts=invoice_draft_service is not None)', source)
         for method_name in ('do_POST', 'do_PUT', 'do_PATCH', 'do_DELETE'):
             handler_class = make_handler(object(), {})
             self.assertNotIn('/order-invoice/', inspect.getsource(getattr(handler_class, method_name)))
