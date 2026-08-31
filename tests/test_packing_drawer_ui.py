@@ -33,8 +33,7 @@ class TestPackingDrawerUi(unittest.TestCase):
             'id="packing-quantity"',
             'id="packing-validation"',
             'Review allocation',
-            "event.key===' '",
-            'event.preventDefault()',
+            "lineList.addEventListener('click'",
             'document.activeElement',
             'focus()',
         ):
@@ -58,9 +57,7 @@ class TestPackingDrawerUi(unittest.TestCase):
 
         html = packing_drawer_html()
         for marker in (
-            "lineList.addEventListener('keydown'",
-            "event.key===' '",
-            "document.body.dataset.scrollLocked='true'",
+            "lineList.addEventListener('click'",
             "boxTarget.addEventListener('change'",
             "reviewButton.addEventListener('click'",
             "validation.textContent='Enter a positive quantity.'",
@@ -98,6 +95,13 @@ if(validation.textContent!=='Quantity exceeds remaining fixture quantity. Origin
 if(quantityFocused!==1) throw new Error('over-remaining quantity must return focus to the quantity field');
 '''
         subprocess.run(["node", "-e", harness, str(source_path)], check=True, capture_output=True, text=True)
+
+    def test_fixture_drawer_keeps_native_button_activation_without_scroll_lock_side_effects(self):
+        from apc_core.packing_drawer_ui import packing_drawer_html
+
+        html = packing_drawer_html()
+        self.assertNotIn('scrollLocked', html)
+        self.assertNotIn("lineList.addEventListener('keydown'", html)
 
     def test_fixture_drawer_uses_native_buttons_and_traps_modal_focus_with_global_escape(self):
         from apc_core.packing_drawer_ui import packing_drawer_html
