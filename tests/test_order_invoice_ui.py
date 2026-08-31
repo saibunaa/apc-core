@@ -70,6 +70,12 @@ class TestOrderInvoiceWorkspaceUi(unittest.TestCase):
         self.assertNotIn("method:'PATCH'", html)
         self.assertNotIn("method:'DELETE'", html)
 
+    def test_default_workspace_excludes_fixture_packing_drawer(self):
+        from apc_core.order_invoice_ui import order_invoice_html
+
+        self.assertNotIn('id="open-packing-drawer"', order_invoice_html())
+        self.assertIn('id="open-packing-drawer"', order_invoice_html(include_fixture_drawer=True))
+
     def test_handler_serves_shared_workspace_without_adding_a_mutation_route(self):
         from apc_core.item_explorer import make_handler
 

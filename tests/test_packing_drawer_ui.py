@@ -73,7 +73,7 @@ class TestPackingDrawerUi(unittest.TestCase):
     def test_shared_order_invoice_workspace_embeds_the_fixture_drawer_without_new_routes(self):
         from apc_core.order_invoice_ui import order_invoice_html
 
-        html = order_invoice_html()
+        html = order_invoice_html(include_fixture_drawer=True)
         self.assertIn('id="open-packing-drawer"', html)
         self.assertIn('id="packing-drawer"', html)
         self.assertIn('fixture-provenance-2026-08-30', html)
