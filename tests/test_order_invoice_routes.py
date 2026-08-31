@@ -11,10 +11,12 @@ from unittest.mock import Mock, patch
 
 
 class _BrowseOrderSource:
-    def __init__(self, row=None):
+    def __init__(self, row=None, page=None):
         self.calls = 0
         self.open_calls = 0
+        self.source_sha256 = "a" * 64
         self.row = row or {"order_id": "ORD//2026/001", "order_date": "2026-08-29", "customer_id": "C/001"}
+        self.page = page
 
     def open_order(self, order_id, *, limit, offset):
         self.open_calls += 1
@@ -30,39 +32,48 @@ class _BrowseOrderSource:
 
     def browse_orders(self, query, *, limit, offset):
         self.calls += 1
+        if self.page is not None:
+            return self.page
         assert (query, limit, offset) == ("ORD//", 1, 0)
         return {"total": 1, "limit": 1, "offset": 0, "has_more": False, "next_offset": None, "orders": [self.row]}
 
 
 class _BrowseInvoiceSource:
-    def __init__(self):
+    def __init__(self, row=None, page=None):
         self.calls = 0
+        self.row = row or {
+            "source_type": "source_invoice", "invoice_id": "C//2026/001", "invoice_date": "2026-08-29",
+            "customer_id": "C/001", "customer_name": "Customer One", "slash_family": "repeated_slash",
+        }
+        self.page = page
 
     def search_invoices(self, *, prefix, limit, offset):
         self.calls += 1
+        if self.page is not None:
+            return self.page
         assert (prefix, limit, offset) == ("C//", 1, 0)
         return {
             "total": 1, "limit": 1, "offset": 0, "has_more": False, "next_offset": None,
-            "invoices": [{
-                "source_type": "source_invoice", "invoice_id": "C//2026/001", "invoice_date": "2026-08-29",
-                "customer_id": "C/001", "customer_name": "Customer One", "slash_family": "repeated_slash",
-            }],
+            "invoices": [self.row],
         }
 
 
 class _BrowseDraftStore:
-    def __init__(self):
+    def __init__(self, row=None, page=None):
         self.calls = 0
+        self.row = row or {
+            "draft_id": "draft-001", "created_by": "YIM", "created_at": "2026-08-29 10:00:00", "status": "draft",
+        }
+        self.page = page
 
     def list_drafts(self, query, *, limit, offset):
         self.calls += 1
+        if self.page is not None:
+            return self.page
         assert (query, limit, offset) == ("draft-", 1, 0)
         return {
             "total": 1, "limit": 1, "offset": 0, "has_more": False, "next_offset": None,
-            "drafts": [{
-                "draft_id": "draft-001", "created_by": "YIM", "created_at": "2026-08-29 10:00:00", "status": "draft",
-                "accepted_snapshot_sha256": "a" * 64,
-            }],
+            "drafts": [self.row],
         }
 
 
@@ -216,7 +227,52 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
         self.assertEqual("ORD//2026/001", payload["results"][0]["order_id"])
         self.assertNotIn("invoice", repr(payload).lower())
 
-    def test_browse_source_order_projects_only_allowlisted_fields_and_controls_record_identity(self):
+    def test_browse_accepts_ascii_case_insensitive_adapter_prefix_matches(self):
+        page_meta = {"total": 1, "limit": 1, "offset": 0, "has_more": False, "next_offset": None}
+        cases = (
+            ("source_order", "ord", _BrowseOrderSource(page={**page_meta, "orders": [{"order_id": "ORD//2026/001", "order_date": "2026-08-29", "customer_id": "C/001"}]}), None, None),
+            ("source_invoice", "c//", None, _BrowseInvoiceSource(page={**page_meta, "invoices": [{"source_type": "source_invoice", "invoice_id": "C//2026/001", "invoice_date": "2026-08-29", "customer_id": "C/001", "customer_name": "Customer One", "slash_family": "repeated_slash"}]}), None),
+            ("core_draft", "draft-", None, None, type("Service", (), {"store": _BrowseDraftStore(page={**page_meta, "drafts": [{"draft_id": "DRAFT-001", "created_by": "YIM", "created_at": "2026-08-29 10:00:00", "status": "draft"}]})})()),
+        )
+        for record_type, query, order_source, invoice_source, service in cases:
+            with self.subTest(record_type=record_type):
+                statuses, payload = self.get(
+                    f"/order-invoice/api/browse?type={record_type}&query={query}&limit=1&offset=0",
+                    order_source=order_source, source_invoice_explorer=invoice_source, invoice_draft_service=service,
+                )
+                self.assertEqual([HTTPStatus.OK], statuses)
+                self.assertEqual(1, len(payload["results"]))
+
+        invoice_row = {
+            "source_type": "source_invoice", "invoice_id": "OTHER/2026/001", "invoice_date": "2026-08-29",
+            "customer_id": "C/001", "customer_name": "Customer One", "slash_family": "single_slash",
+        }
+        invoice_source = _BrowseInvoiceSource(page={
+            "total": 1, "limit": 1, "offset": 0, "has_more": False, "next_offset": None, "invoices": [invoice_row],
+        })
+        draft_store = _BrowseDraftStore(page={
+            "total": 1, "limit": 1, "offset": 0, "has_more": False, "next_offset": None,
+            "drafts": [{"draft_id": "other-001", "created_by": "YIM", "created_at": "2026-08-29 10:00:00", "status": "draft"}],
+        })
+        cases = (
+            ("source_invoice", "C//", invoice_source, None),
+            ("core_draft", "draft-", None, type("Service", (), {"store": draft_store})()),
+        )
+        for record_type, query, source, service in cases:
+            with self.subTest(record_type=record_type):
+                statuses, payload = self.get(
+                    f"/order-invoice/api/browse?type={record_type}&query={query}&limit=1&offset=0",
+                    source_invoice_explorer=source, invoice_draft_service=service,
+                )
+                self.assertEqual([HTTPStatus.BAD_REQUEST], statuses)
+                self.assertEqual({"error": "invalid browse query"}, payload)
+
+        source = _BrowseOrderSource({"order_id": "OTHER/2026/001", "order_date": "2026-08-29", "customer_id": "C/001"})
+        statuses, payload = self.get("/order-invoice/api/browse?type=source_order&query=ORD//&limit=1&offset=0", order_source=source)
+
+        self.assertEqual([HTTPStatus.BAD_REQUEST], statuses)
+        self.assertEqual({"error": "invalid browse query"}, payload)
+
         hostile_row = {
             "order_id": "ORD//2026/001", "order_date": "2026-08-29", "customer_id": "C/001",
             "record_type": "hostile", "record_id": "hostile-id", "provenance": "leak", "source_sha256": "x" * 64,
@@ -226,11 +282,8 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
             order_source=_BrowseOrderSource(hostile_row),
         )
 
-        self.assertEqual([HTTPStatus.OK], statuses)
-        self.assertEqual(
-            {"record_type": "source_order", "record_id": "source_order:ORD//2026/001", "order_id": "ORD//2026/001", "order_date": "2026-08-29", "customer_id": "C/001"},
-            payload["results"][0],
-        )
+        self.assertEqual([HTTPStatus.BAD_REQUEST], statuses)
+        self.assertEqual({"error": "invalid browse query"}, payload)
 
     def test_browse_source_invoice_preserves_exact_slashes_without_order_provenance(self):
         statuses, payload = self.get(
@@ -244,6 +297,110 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
         self.assertEqual("C//2026/001", payload["results"][0]["source_invoice_number"])
         self.assertNotIn("order", repr(payload).lower())
         self.assertNotIn("source_sha256", repr(payload))
+
+    def test_browse_rejects_reader_page_metadata_that_disagrees_with_the_request(self):
+        row = {
+            "source_type": "source_invoice", "invoice_id": "C//2026/001", "invoice_date": "2026-08-29",
+            "customer_id": "C/001", "customer_name": "Customer One", "slash_family": "repeated_slash",
+        }
+        source = _BrowseInvoiceSource(page={
+            "total": 3, "limit": 3, "offset": 0, "has_more": False, "next_offset": None,
+            "invoices": [row, {**row, "invoice_id": "C//2026/002"}, {**row, "invoice_id": "C//2026/003"}],
+        })
+        statuses, payload = self.get(
+            "/order-invoice/api/browse?type=source_invoice&query=C//&limit=2&offset=0",
+            source_invoice_explorer=source,
+        )
+
+        self.assertEqual([HTTPStatus.BAD_REQUEST], statuses)
+        self.assertEqual({"error": "invalid browse query"}, payload)
+
+        cases = (
+            (
+                "source_invoice",
+                _BrowseInvoiceSource({
+                    "invoice_id": "C//2026/001", "invoice_date": "2026-08-29", "customer_id": "C/001",
+                    "customer_name": "Customer One", "slash_family": "repeated_slash", "order_reference": "ORD/hostile",
+                }),
+                None,
+            ),
+            (
+                "core_draft",
+                None,
+                _BrowseDraftStore({
+                    "draft_id": "draft-001", "created_by": "YIM", "created_at": "2026-08-29 10:00:00",
+                    "status": "draft", "source_sha256": "x" * 64,
+                }),
+            ),
+        )
+        for record_type, invoice_source, draft_store in cases:
+            with self.subTest(record_type=record_type):
+                service = None if draft_store is None else type("Service", (), {"store": draft_store})()
+                statuses, payload = self.get(
+                    f"/order-invoice/api/browse?type={record_type}&query=" + ("C//" if record_type == "source_invoice" else "draft-") + "&limit=1&offset=0",
+                    source_invoice_explorer=invoice_source,
+                    invoice_draft_service=service,
+                )
+                self.assertEqual([HTTPStatus.BAD_REQUEST], statuses)
+                self.assertEqual({"error": "invalid browse query"}, payload)
+
+    def test_browse_rejects_truncated_nonfinal_reader_page(self):
+        row = {
+            "source_type": "source_invoice", "invoice_id": "C//2026/001", "invoice_date": "2026-08-29",
+            "customer_id": "C/001", "customer_name": "Customer One", "slash_family": "repeated_slash",
+        }
+        source = _BrowseInvoiceSource(page={
+            "total": 3, "limit": 2, "offset": 0, "has_more": True, "next_offset": 2, "invoices": [row],
+        })
+        statuses, payload = self.get(
+            "/order-invoice/api/browse?type=source_invoice&query=C//&limit=2&offset=0",
+            source_invoice_explorer=source,
+        )
+
+        self.assertEqual([HTTPStatus.BAD_REQUEST], statuses)
+        self.assertEqual({"error": "invalid browse query"}, payload)
+
+    def test_open_source_order_rejects_hostile_cross_family_mutation_or_missing_line_identity(self):
+        safe_line = {
+            "line_no": "1", "item_id": "ITEM-1", "qty": "2", "description_th": "ไทย",
+            "reference": "", "description_en": "English", "is_annotation": False,
+        }
+        hostile_pages = (
+            {"invoice_id": "INV/hostile"},
+            {"order_id": "ORD/hostile"},
+            {"provenance": "hostile"},
+            {"order_date": None},
+            {"limit": "2"},
+            {"total": 2, "limit": 2, "offset": 0, "has_more": True, "next_offset": None},
+            {"lines": [safe_line], "total": 3, "limit": 2, "offset": 0, "has_more": True, "next_offset": 2},
+            {"lines": [
+                safe_line,
+                {**safe_line, "line_no": "2"},
+                {**safe_line, "line_no": "3"},
+            ], "total": 3, "limit": 3, "offset": 0, "has_more": False, "next_offset": None},
+            {"lines": [{**safe_line, "action": "delete"}]},
+            {"lines": [{**safe_line, "invoice_id": "INV/hostile"}]},
+            {"lines": [{**safe_line, "source_sha256": "b" * 64}]},
+            {"lines": [{"line_no": "1"}], "total": 1, "limit": 2, "offset": 0, "has_more": False, "next_offset": None},
+            {"lines": [{**safe_line, "line_no": ""}]},
+        )
+        for override in hostile_pages:
+            with self.subTest(override=override):
+                source = _BrowseOrderSource()
+                source.source_sha256 = "a" * 64
+                original_open = source.open_order
+
+                def hostile_open(order_id, *, limit, offset, override=override):
+                    page = original_open(order_id, limit=limit, offset=offset)
+                    page.update(override)
+                    return page
+
+                source.open_order = hostile_open
+                statuses, payload = self.get(
+                    "/order-invoice/api/source-orders/ORD//2026/001?limit=2&offset=0", order_source=source
+                )
+                self.assertEqual([HTTPStatus.BAD_REQUEST], statuses)
+                self.assertEqual({"error": "invalid order detail query"}, payload)
 
     def test_browse_core_drafts_has_no_provenance_and_never_creates_a_draft(self):
         store = _BrowseDraftStore()

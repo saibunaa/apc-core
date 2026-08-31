@@ -19,6 +19,13 @@ from apc_core.invoice_draft_previews import InvoiceDraftPreviewRegistry
 from apc_core.invoice_draft_ui import invoice_draft_html
 from apc_core.order_explorer import invoice_draft_handoff_html
 from apc_core.order_invoice_ui import order_invoice_html as _order_invoice_html
+from apc_core.order_invoice_workspace import (
+    map_browse_page,
+    map_core_draft_browse,
+    map_source_invoice_browse,
+    map_source_order,
+    map_source_order_browse,
+)
 
 
 _PRIVATE_LAN_NETWORKS = (
@@ -1037,22 +1044,28 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                     if not order_id:
                         raise ValueError
                     page = order_explorer.open_order(order_id, limit=limit, offset=offset)
+                    if page is not None:
+                        dto = map_source_order(
+                            page,
+                            source_sha256=order_explorer.source_sha256,
+                            strict_served_page=True,
+                            requested_limit=limit,
+                            requested_offset=offset,
+                            requested_order_id=order_id,
+                        )
                 except (KeyError, OverflowError, TypeError, ValueError, sqlite3.Error):
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid order detail query"})
                 else:
                     if page is None:
                         self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
                     else:
-                        lines = [
-                            {key: row[key] for key in ("line_no", "item_id", "qty", "description_th", "reference", "description_en", "is_annotation")}
-                            for row in page["lines"]
-                        ]
+                        lines = [dict(line) for line in dto.line_page]
                         self._send_json(HTTPStatus.OK, {
-                            "record_type": "source_order", "record_id": "source_order:" + page["order_id"],
-                            "order_id": page["order_id"], "order_date": page["order_date"],
-                            "customer_id": page["customer_id"], "customer_name": page["customer_name"],
-                            "lines": lines, "total": page["total"], "limit": page["limit"],
-                            "offset": page["offset"], "has_more": page["has_more"], "next_offset": page["next_offset"],
+                            "record_type": dto.record_type, "record_id": dto.record_id,
+                            "order_id": dto.record_id.removeprefix("source_order:"), "order_date": dto.document_date,
+                            "customer_id": dto.customer_id, "customer_name": dto.customer_name,
+                            "lines": lines, "total": dto.line_total, "limit": dto.line_limit,
+                            "offset": dto.line_offset, "has_more": dto.has_more, "next_offset": dto.next_offset,
                         })
                 return
             if parsed.path == "/order-invoice/api/browse":
@@ -1072,32 +1085,54 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                         raise ValueError
                     if record_type == "source_order" and order_explorer is not None:
                         page = order_explorer.browse_orders(search, limit=limit, offset=offset)
-                        results = [
-                            {"record_type": "source_order", "record_id": "source_order:" + row["order_id"],
-                             "order_id": row["order_id"], "order_date": row["order_date"], "customer_id": row["customer_id"]}
-                            for row in page["orders"]
-                        ]
+                        browse_page = map_browse_page(page, row_key="orders", requested_limit=limit, requested_offset=offset)
+                        results = []
+                        for row in browse_page.rows:
+                            dto = map_source_order_browse(row)
+                            fields = dict(dto.fields)
+                            if not (
+                                fields["order_id"].startswith(search)
+                                or (fields["order_id"].isascii() and search.isascii() and fields["order_id"].lower().startswith(search.lower()))
+                            ):
+                                raise ValueError("source order browse result does not match query")
+                            results.append({"record_type": dto.record_type, "record_id": dto.record_id,
+                                            "order_id": fields["order_id"], "order_date": fields["order_date"],
+                                            "customer_id": fields["customer_id"]})
                     elif record_type == "source_invoice" and source_invoice_explorer is not None:
                         page = source_invoice_explorer.search_invoices(prefix=search, limit=limit, offset=offset)
-                        results = [
-                            {"record_type": "source_invoice", "record_id": "source_invoice:" + row["invoice_id"],
-                             "source_invoice_number": row["invoice_id"], "invoice_date": row["invoice_date"],
-                             "customer_id": row["customer_id"], "customer_name": row["customer_name"],
-                             "slash_family": row["slash_family"]}
-                            for row in page["invoices"]
-                        ]
+                        browse_page = map_browse_page(page, row_key="invoices", requested_limit=limit, requested_offset=offset)
+                        results = []
+                        for row in browse_page.rows:
+                            dto = map_source_invoice_browse(row)
+                            fields = dict(dto.fields)
+                            if not (
+                                fields["invoice_id"].startswith(search)
+                                or (fields["invoice_id"].isascii() and search.isascii() and fields["invoice_id"].lower().startswith(search.lower()))
+                            ):
+                                raise ValueError("source invoice browse result does not match query")
+                            results.append({"record_type": dto.record_type, "record_id": dto.record_id,
+                                            "source_invoice_number": fields["invoice_id"], "invoice_date": fields["invoice_date"],
+                                            "customer_id": fields["customer_id"], "customer_name": fields["customer_name"],
+                                            "slash_family": fields["slash_family"]})
                     elif record_type == "core_draft" and invoice_draft_service is not None:
                         page = invoice_draft_service.store.list_drafts(search, limit=limit, offset=offset)
-                        results = [
-                            {"record_type": "core_draft", "record_id": "core_draft:" + row["draft_id"], "draft_id": row["draft_id"],
-                             "created_by": row["created_by"], "created_at": row["created_at"], "status": row["status"]}
-                            for row in page["drafts"]
-                        ]
+                        browse_page = map_browse_page(page, row_key="drafts", requested_limit=limit, requested_offset=offset)
+                        results = []
+                        for row in browse_page.rows:
+                            dto = map_core_draft_browse(row)
+                            fields = dict(dto.fields)
+                            if not (
+                                fields["draft_id"].startswith(search)
+                                or (fields["draft_id"].isascii() and search.isascii() and fields["draft_id"].lower().startswith(search.lower()))
+                            ):
+                                raise ValueError("Core draft browse result does not match query")
+                            results.append({"record_type": dto.record_type, "record_id": dto.record_id, "draft_id": fields["draft_id"],
+                                            "created_by": fields["created_by"], "created_at": fields["created_at"], "status": fields["status"]})
                     else:
                         raise ValueError
-                    self._send_json(HTTPStatus.OK, {"record_type": record_type, "total": page["total"], "limit": page["limit"],
-                                                     "offset": page["offset"], "has_more": page["has_more"],
-                                                     "next_offset": page["next_offset"], "results": results})
+                    self._send_json(HTTPStatus.OK, {"record_type": record_type, "total": browse_page.total, "limit": browse_page.limit,
+                                                     "offset": browse_page.offset, "has_more": browse_page.has_more,
+                                                     "next_offset": browse_page.next_offset, "results": results})
                 except (KeyError, OverflowError, TypeError, ValueError, sqlite3.Error):
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid browse query"})
                 return
