@@ -94,7 +94,7 @@ class ServerContractTests(unittest.TestCase):
                  patch.object(server, "CustomerExplorer", return_value=customers), \
                  patch.object(server.CustomerPriceModule, "from_open_descriptor", return_value=prices) as price_factory, \
                  patch.object(server.OrderExplorer, "from_open_descriptor", return_value=orders) as order_factory:
-                loaded_items, loaded_customers, loaded_prices, loaded_orders, loaded_awb, loaded_manifest = server.load_accepted_customer_price_order_runtime(root / "substituted.sqlite")
+                loaded_items, loaded_customers, loaded_prices, loaded_orders, loaded_awb, _, _, loaded_manifest = server.load_accepted_customer_price_order_runtime(root / "substituted.sqlite")
 
             self.assertEqual((items, customers, prices, orders, manifest), (loaded_items, loaded_customers, loaded_prices, loaded_orders, loaded_manifest))
             item_factory.assert_called_once_with(descriptor, accepted, data_dir=None)
@@ -148,7 +148,7 @@ class ServerContractTests(unittest.TestCase):
                  patch.object(server.CustomerPriceModule, "from_open_descriptor", return_value=prices), \
                  patch.object(server.OrderExplorer, "from_open_descriptor", return_value=orders), \
                  patch.object(server.AWBExplorer, "from_open_descriptor", return_value=Mock()) as awb_factory:
-                _, _, _, _, loaded_awb, loaded_manifest = server.load_accepted_customer_price_order_runtime(root / "substituted.sqlite")
+                _, _, _, _, loaded_awb, _, _, loaded_manifest = server.load_accepted_customer_price_order_runtime(root / "substituted.sqlite")
 
             self.assertIsNone(loaded_awb)
             self.assertEqual(manifest, loaded_manifest)
@@ -191,7 +191,7 @@ class ServerContractTests(unittest.TestCase):
                      patch.object(server.CustomerPriceModule, "from_open_descriptor", return_value=prices), \
                      patch.object(server.OrderExplorer, "from_open_descriptor", return_value=orders), \
                      patch.object(server.AWBExplorer, "from_open_descriptor", return_value=Mock()) as awb_factory:
-                    loaded_items, loaded_customers, loaded_prices, loaded_orders, loaded_awb, loaded_manifest = server.load_accepted_customer_price_order_runtime(root / "substituted.sqlite")
+                    loaded_items, loaded_customers, loaded_prices, loaded_orders, loaded_awb, _, _, loaded_manifest = server.load_accepted_customer_price_order_runtime(root / "substituted.sqlite")
 
                 self.assertEqual((items, customers, prices, orders, manifest), (loaded_items, loaded_customers, loaded_prices, loaded_orders, loaded_manifest))
                 self.assertIsNone(loaded_awb)
@@ -228,7 +228,7 @@ class ServerContractTests(unittest.TestCase):
                  patch.object(server.CustomerPriceModule, "from_open_descriptor", return_value=prices), \
                  patch.object(server.OrderExplorer, "from_open_descriptor", return_value=orders), \
                  patch.object(server.AWBExplorer, "from_open_descriptor", side_effect=server.AWBSourceContractError) as awb_factory:
-                _, _, _, _, loaded_awb, _ = server.load_accepted_customer_price_order_runtime(root / "substituted.sqlite")
+                _, _, _, _, loaded_awb, _, _, _ = server.load_accepted_customer_price_order_runtime(root / "substituted.sqlite")
 
             self.assertIsNone(loaded_awb)
             awb_factory.assert_called_once_with(descriptor, accepted)
@@ -253,7 +253,7 @@ class ServerContractTests(unittest.TestCase):
                  patch.object(server.CustomerPriceModule, "from_open_descriptor", side_effect=AssertionError("prices must not construct")) as price_factory, \
                  patch.object(server.OrderExplorer, "from_open_descriptor", side_effect=AssertionError("orders must not construct")) as order_factory, \
                  patch.object(server.AWBExplorer, "from_open_descriptor", side_effect=AssertionError("awb must not construct")) as awb_factory:
-                loaded_items, loaded_customers, loaded_prices, loaded_orders, loaded_awb, loaded_manifest = server.load_accepted_customer_price_order_runtime(root / "substituted.sqlite")
+                loaded_items, loaded_customers, loaded_prices, loaded_orders, loaded_awb, _, _, loaded_manifest = server.load_accepted_customer_price_order_runtime(root / "substituted.sqlite")
 
             self.assertIs(items, loaded_items)
             self.assertEqual((None, None, None, None, manifest), (loaded_customers, loaded_prices, loaded_orders, loaded_awb, loaded_manifest))
@@ -579,7 +579,7 @@ class ServerContractTests(unittest.TestCase):
                  patch.object(server.InvoiceConversionSource, "from_open_descriptor") as source_factory:
                 result = server.load_accepted_customer_price_order_runtime(root / "ignored.json", data_dir=root / "core-state")
 
-            self.assertEqual((items, None, None, None, None, manifest), result)
+            self.assertEqual((items, None, None, None, None, None, None, manifest), result)
             store_factory.assert_not_called()
             source_factory.assert_not_called()
             self.assertFalse((root / "core-state" / "apc_core.sqlite").exists())
