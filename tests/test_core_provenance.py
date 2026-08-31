@@ -46,13 +46,13 @@ class CoreProvenanceFoundationTests(unittest.TestCase):
             with sqlite3.connect(database) as connection:
                 self.assertEqual(before, connection.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall())
 
-            self.assertEqual(1, apply_core_provenance_migrations(database))
-            self.assertEqual(1, apply_core_provenance_migrations(database))
+            self.assertEqual(2, apply_core_provenance_migrations(database))
+            self.assertEqual(2, apply_core_provenance_migrations(database))
             with sqlite3.connect(database) as connection:
                 tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 versions = connection.execute("SELECT version FROM core_schema_migrations").fetchall()
             self.assertTrue({"legacy_state", "core_schema_migrations", "core_source_snapshots", "core_source_rows"}.issubset(tables))
-            self.assertEqual([(1,)], versions)
+            self.assertEqual([(1,), (2,)], versions)
 
     def test_store_constructor_rejects_missing_database_without_creating_it(self):
         from apc_core.core_provenance import CoreProvenanceError, CoreProvenanceStore
