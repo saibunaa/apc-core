@@ -24,6 +24,7 @@ from apc_core.order_invoice_ui import order_invoice_html as _order_invoice_html
 from apc_core.order_invoice_workspace import (
     map_browse_page,
     map_core_draft_browse,
+    map_source_invoice,
     map_source_invoice_browse,
     map_source_order,
     map_source_order_browse,
@@ -1016,7 +1017,7 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
             if customer_explorer is not None and customer_read_path and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
                 self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer access is loopback-only unless customer LAN ingress is enabled"})
                 return
-            if (parsed.path in {"/order-invoice/", "/order-invoice/api/browse"} or parsed.path.startswith("/order-invoice/api/source-orders/")) and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
+            if (parsed.path in {"/order-invoice/", "/order-invoice/api/browse"} or parsed.path.startswith("/order-invoice/api/source-orders/") or parsed.path.startswith("/order-invoice/api/source-invoices/")) and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
                 self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer access is loopback-only unless customer LAN ingress is enabled"})
                 return
             if parsed.path == "/":
@@ -1091,6 +1092,55 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                             "customer_id": dto.customer_id, "customer_name": dto.customer_name,
                             "lines": lines, "total": dto.line_total, "limit": dto.line_limit,
                             "offset": dto.line_offset, "has_more": dto.has_more, "next_offset": dto.next_offset,
+                        })
+                return
+            if source_invoice_explorer is not None and parsed.path.startswith("/order-invoice/api/source-invoices/"):
+                try:
+                    query = parse_qs(parsed.query, keep_blank_values=True)
+                    if set(query) != {"limit", "offset"}:
+                        raise ValueError
+                    limits, offsets = query.get("limit", []), query.get("offset", [])
+                    if len(limits) != 1 or len(offsets) != 1:
+                        raise ValueError
+                    if not re.fullmatch(r"[0-9]+", limits[0]) or not re.fullmatch(r"[0-9]+", offsets[0]):
+                        raise ValueError
+                    limit, offset = int(limits[0]), int(offsets[0])
+                    if not 1 <= limit <= 250 or offset > 9_223_372_036_854_775_807:
+                        raise ValueError
+                    invoice_id = unquote(parsed.path.removeprefix("/order-invoice/api/source-invoices/"))
+                    if not invoice_id:
+                        raise ValueError
+                    page = source_invoice_explorer.open_invoice(invoice_id, limit=limit, offset=offset)
+                    if page is not None:
+                        expected_page_keys = {
+                            "source_sha256", "source_type", "invoice_id", "slash_family", "header", "total",
+                            "limit", "offset", "has_more", "next_offset", "lines",
+                        }
+                        if (
+                            type(page) is not dict or set(page) != expected_page_keys
+                            or page["source_sha256"] != source_invoice_explorer.source_sha256
+                            or page["source_type"] != "source_invoice" or page["invoice_id"] != invoice_id
+                            or page["limit"] != limit or page["offset"] != offset
+                            or set(page["header"]) != {"invoice_date", "customer_id", "customer_name"}
+                            or (page["has_more"] is True and page["next_offset"] != offset + limit)
+                            or (page["has_more"] is False and page["next_offset"] is not None)
+                        ):
+                            raise ValueError
+                        dto = map_source_invoice(page, source_sha256=source_invoice_explorer.source_sha256)
+                except (KeyError, OverflowError, TypeError, ValueError, sqlite3.Error):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid legacy invoice detail query"})
+                else:
+                    if page is None:
+                        self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                    else:
+                        header = page["header"]
+                        self._send_json(HTTPStatus.OK, {
+                            "record_type": dto.record_type, "record_id": dto.record_id,
+                            "invoice_id": dto.record_id.removeprefix("source_invoice:"),
+                            "invoice_date": header["invoice_date"], "customer_id": dto.customer_id,
+                            "customer_name": dto.customer_name, "lines": [dict(line) for line in dto.line_page],
+                            "total": dto.line_total, "limit": limit, "offset": offset,
+                            "has_more": page["has_more"], "next_offset": dto.next_offset,
                         })
                 return
             if parsed.path == "/order-invoice/api/browse":

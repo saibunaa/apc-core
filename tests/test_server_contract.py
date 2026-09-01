@@ -341,7 +341,10 @@ class ServerContractTests(unittest.TestCase):
              patch.object(server, "ThreadingHTTPServer", FakeServer):
             server.main()
 
-        loader.assert_called_once_with(Path("accepted.json"), data_dir=None, with_invoice_drafts=False)
+        loader.assert_called_once_with(
+            Path("accepted.json"), data_dir=None, with_invoice_drafts=False,
+            legacy_invoice_snapshot=None, legacy_invoice_sha256=None,
+        )
         handler_factory.assert_called_once_with(
             items, manifest, customers, prices, orders, None,
             invoice_source=None, invoice_draft_service=None, accepted_snapshot_sha256=manifest["accepted_artifact_sha256"],
