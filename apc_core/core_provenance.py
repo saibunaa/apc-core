@@ -21,6 +21,7 @@ from pathlib import Path
 ORDER_ITEM_TABLE = "MainDB__ORDER_ITEM"
 ORDER_ITEM_REQUIRED_COLUMNS = {"Order No", "Line No", "Item ID", "Qty", "Description TH", "SubCust"}
 _SCHEMA_VERSION = 2
+_INVOICE_SCHEMA_VERSION = 3
 
 
 class CoreProvenanceError(ValueError):
@@ -161,8 +162,116 @@ def _migration_002(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_003(connection: sqlite3.Connection) -> None:
+    """P3a Core-owned no-money invoice lifecycle; never part of runtime startup."""
+    connection.execute(
+        "CREATE TABLE core_invoices ("
+        "invoice_id TEXT PRIMARY KEY NOT NULL, created_by TEXT NOT NULL, "
+        "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "status TEXT NOT NULL CHECK(status IN ('draft','review','approved','cancelled')), "
+        "version INTEGER NOT NULL DEFAULT 0 CHECK(version >= 0), idempotency_key TEXT NOT NULL UNIQUE)"
+    )
+    connection.execute(
+        "CREATE TABLE core_invoice_lines ("
+        "invoice_line_id TEXT PRIMARY KEY NOT NULL, invoice_id TEXT NOT NULL REFERENCES core_invoices(invoice_id) DEFERRABLE INITIALLY DEFERRED, "
+        "order_line_id TEXT NOT NULL UNIQUE REFERENCES core_order_lines(line_id), "
+        "UNIQUE(invoice_id,order_line_id))"
+    )
+    connection.execute(
+        "CREATE TABLE core_invoice_events ("
+        "event_id TEXT PRIMARY KEY NOT NULL, invoice_id TEXT NOT NULL REFERENCES core_invoices(invoice_id) DEFERRABLE INITIALLY DEFERRED, "
+        "conflict_id TEXT REFERENCES core_invoice_conflicts(conflict_id), "
+        "event_kind TEXT NOT NULL CHECK(event_kind IN ('creation','review_submission','approval','cancellation','evidence_conflict','conflict_resolution')), "
+        "actor TEXT NOT NULL, expected_version INTEGER NOT NULL CHECK(expected_version >= 0), "
+        "idempotency_key TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+    )
+    connection.execute(
+        "CREATE TABLE core_invoice_conflicts ("
+        "conflict_id TEXT PRIMARY KEY NOT NULL, invoice_id TEXT NOT NULL REFERENCES core_invoices(invoice_id), "
+        "source_snapshot_sha256 TEXT NOT NULL REFERENCES core_source_snapshots(snapshot_sha256), "
+        "imported_snapshot_sha256 TEXT NOT NULL REFERENCES core_source_snapshots(snapshot_sha256), "
+        "comparison_rule TEXT NOT NULL CHECK(comparison_rule='core_imported_at_strictly_later'), "
+        "source_imported_at TEXT NOT NULL, imported_snapshot_imported_at TEXT NOT NULL, "
+        "UNIQUE(invoice_id,source_snapshot_sha256,imported_snapshot_sha256), "
+        "CHECK(source_snapshot_sha256 <> imported_snapshot_sha256))"
+    )
+    for table in ("core_invoice_lines", "core_invoice_events", "core_invoice_conflicts"):
+        connection.execute(
+            f"CREATE TRIGGER {table}_no_update BEFORE UPDATE ON {table} "
+            f"BEGIN SELECT RAISE(ABORT, '{table} is immutable'); END"
+        )
+        connection.execute(
+            f"CREATE TRIGGER {table}_no_delete BEFORE DELETE ON {table} "
+            f"BEGIN SELECT RAISE(ABORT, '{table} is append-only'); END"
+        )
+    connection.execute(
+        "CREATE TRIGGER core_invoice_lines_fk_guard BEFORE INSERT ON core_invoice_lines "
+        "WHEN NOT EXISTS (SELECT 1 FROM core_order_lines WHERE line_id=NEW.order_line_id) "
+        "BEGIN SELECT RAISE(ABORT, 'core invoice line foreign key is invalid'); END"
+    )
+    connection.execute(
+        "CREATE TRIGGER core_invoice_events_fk_guard BEFORE INSERT ON core_invoice_events "
+        "WHEN (NOT EXISTS (SELECT 1 FROM core_invoices WHERE invoice_id=NEW.invoice_id) AND NOT ("
+        "NEW.event_kind='creation' AND NEW.conflict_id IS NULL AND NEW.expected_version=0)) "
+        "OR (NEW.event_kind IN ('evidence_conflict','conflict_resolution') AND (NEW.conflict_id IS NULL OR NOT EXISTS ("
+        "SELECT 1 FROM core_invoice_conflicts WHERE conflict_id=NEW.conflict_id AND invoice_id=NEW.invoice_id))) "
+        "OR (NEW.event_kind NOT IN ('evidence_conflict','conflict_resolution') AND NEW.conflict_id IS NOT NULL) "
+        "BEGIN SELECT RAISE(ABORT, 'core invoice event foreign key is invalid'); END"
+    )
+    connection.execute(
+        "CREATE TRIGGER core_invoice_creation_event_insert_guard BEFORE INSERT ON core_invoice_events "
+        "WHEN NEW.event_kind='creation' AND EXISTS (SELECT 1 FROM core_invoices WHERE invoice_id=NEW.invoice_id) "
+        "BEGIN SELECT RAISE(ABORT, 'core invoice creation event must precede invoice creation'); END"
+    )
+    connection.execute(
+        "CREATE TRIGGER core_invoices_creation_guard BEFORE INSERT ON core_invoices "
+        "WHEN NEW.status <> 'draft' OR NEW.version <> 1 OR NOT EXISTS ("
+        "SELECT 1 FROM core_invoice_events WHERE invoice_id=NEW.invoice_id AND event_kind='creation' "
+        "AND conflict_id IS NULL AND actor=NEW.created_by AND expected_version=0 AND idempotency_key=NEW.idempotency_key"
+        ") OR NOT EXISTS (SELECT 1 FROM core_invoice_lines WHERE invoice_id=NEW.invoice_id) "
+        "BEGIN SELECT RAISE(ABORT, 'core invoice creation requires matching audited event and membership'); END"
+    )
+    connection.execute(
+        "CREATE TRIGGER core_invoice_conflicts_fk_guard BEFORE INSERT ON core_invoice_conflicts "
+        "WHEN NOT EXISTS (SELECT 1 FROM core_invoices WHERE invoice_id=NEW.invoice_id) "
+        "OR NOT EXISTS (SELECT 1 FROM core_source_snapshots WHERE snapshot_sha256=NEW.source_snapshot_sha256) "
+        "OR NOT EXISTS (SELECT 1 FROM core_source_snapshots WHERE snapshot_sha256=NEW.imported_snapshot_sha256) "
+        "BEGIN SELECT RAISE(ABORT, 'core invoice conflict foreign key is invalid'); END"
+    )
+    connection.execute(
+        "CREATE TRIGGER core_invoice_conflicts_timestamp_guard BEFORE INSERT ON core_invoice_conflicts "
+        "WHEN NEW.source_imported_at <> (SELECT imported_at FROM core_source_snapshots WHERE snapshot_sha256=NEW.source_snapshot_sha256) "
+        "OR NEW.imported_snapshot_imported_at <> (SELECT imported_at FROM core_source_snapshots WHERE snapshot_sha256=NEW.imported_snapshot_sha256) "
+        "OR julianday(NEW.source_imported_at) IS NULL OR julianday(NEW.imported_snapshot_imported_at) IS NULL "
+        "OR strftime('%Y-%m-%d', NEW.source_imported_at) <> substr(NEW.source_imported_at,1,10) "
+        "OR strftime('%Y-%m-%d', NEW.imported_snapshot_imported_at) <> substr(NEW.imported_snapshot_imported_at,1,10) "
+        "OR NOT (NEW.source_imported_at GLOB '????-??-??T??:??:??Z' OR NEW.source_imported_at GLOB '????-??-??T??:??:??+??:??' OR NEW.source_imported_at GLOB '????-??-??T??:??:??-??:??') "
+        "OR NOT (NEW.imported_snapshot_imported_at GLOB '????-??-??T??:??:??Z' OR NEW.imported_snapshot_imported_at GLOB '????-??-??T??:??:??+??:??' OR NEW.imported_snapshot_imported_at GLOB '????-??-??T??:??:??-??:??') "
+        "OR julianday(NEW.imported_snapshot_imported_at) <= julianday(NEW.source_imported_at) "
+        "BEGIN SELECT RAISE(ABORT, 'core invoice conflict timestamps are not strictly later timezone-aware evidence'); END"
+    )
+    connection.execute(
+        "CREATE TRIGGER core_invoices_no_delete BEFORE DELETE ON core_invoices "
+        "BEGIN SELECT RAISE(ABORT, 'core invoices are append-only'); END"
+    )
+    connection.execute(
+        "CREATE TRIGGER core_invoices_lifecycle_guard BEFORE UPDATE OF status,version ON core_invoices "
+        "WHEN NEW.version <> OLD.version + 1 OR NOT EXISTS ("
+        "SELECT 1 FROM core_invoice_events WHERE invoice_id=OLD.invoice_id AND expected_version=OLD.version AND ("
+        "(OLD.status='draft' AND NEW.status='review' AND event_kind='review_submission') OR "
+        "(OLD.status='review' AND NEW.status='approved' AND event_kind='approval') OR "
+        "(OLD.status <> 'cancelled' AND NEW.status='cancelled' AND event_kind='cancellation') OR "
+        "(OLD.status=NEW.status AND event_kind IN ('evidence_conflict','conflict_resolution'))"
+        ")) BEGIN SELECT RAISE(ABORT, 'core invoice lifecycle requires a matching audited event'); END"
+    )
+    connection.execute(
+        "CREATE TRIGGER core_invoices_identity_immutable BEFORE UPDATE OF invoice_id,created_by,created_at,idempotency_key ON core_invoices "
+        "BEGIN SELECT RAISE(ABORT, 'core invoice identity is immutable'); END"
+    )
+
+
 def apply_core_provenance_migrations(database_path: Path) -> int:
-    """Apply the explicit, versioned P1 foundation migration to a Core DB."""
+    """Apply the explicit, versioned P1/P2 foundation migrations to a Core DB."""
     database_path = Path(database_path)
     database_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(database_path) as connection:
@@ -180,6 +289,20 @@ def apply_core_provenance_migrations(database_path: Path) -> int:
             _migration_002(connection)
             connection.execute("INSERT INTO core_schema_migrations(version) VALUES (?)", (2,))
     return _SCHEMA_VERSION
+
+
+def apply_core_invoice_migrations(database_path: Path) -> int:
+    """Apply explicit migration 003 to an already-versioned local Core DB."""
+    apply_core_provenance_migrations(database_path)
+    database_path = Path(database_path)
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("BEGIN IMMEDIATE")
+        applied = {row[0] for row in connection.execute("SELECT version FROM core_schema_migrations")}
+        if 3 not in applied:
+            _migration_003(connection)
+            connection.execute("INSERT INTO core_schema_migrations(version) VALUES (?)", (3,))
+    return _INVOICE_SCHEMA_VERSION
 
 
 class CoreProvenanceStore:
