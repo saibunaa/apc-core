@@ -90,6 +90,61 @@ class StaffIdentityFoundationTests(unittest.TestCase):
             self.assertIn(marker, html)
         self.assertNotIn('id="confirm-user"', html)
 
+    def test_identity_picker_staff_endpoint_reads_the_separate_seeded_registry_without_changing_mutation_authority(self):
+        from http.server import ThreadingHTTPServer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            explorer = ItemExplorer(self.make_snapshot(root), data_dir=root / "state")
+            handler = make_handler(explorer, {"accepted": True})
+            explorer._local_store().connection.execute("UPDATE core_users SET active=0 WHERE username='YIM'")
+            explorer._local_store().connection.commit()
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                host, port = server.server_address
+                connection = HTTPConnection(host, port, timeout=3)
+                connection.request("GET", "/api/staff")
+                response = connection.getresponse()
+                payload = json.loads(response.read())
+                connection.close()
+                self.assertEqual(200, response.status)
+                self.assertIn({"username": "YIM", "role": "Editor"}, payload["staff"])
+                with self.assertRaises(ValueError):
+                    explorer._local_store().require_active_actor("YIM")
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_identity_picker_staff_endpoint_can_use_the_fixture_only_provider_without_changing_store_authority(self):
+        from apc_core.active_staff_provider import ActiveStaffProvider
+        from http.server import ThreadingHTTPServer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            explorer = ItemExplorer(self.make_snapshot(root), data_dir=root / "state")
+            provider = ActiveStaffProvider((("TESTER", "Fixture"),))
+            handler = make_handler(explorer, {"accepted": True}, identity_staff_provider=provider)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                host, port = server.server_address
+                connection = HTTPConnection(host, port, timeout=3)
+                connection.request("GET", "/api/staff")
+                response = connection.getresponse()
+                payload = json.loads(response.read())
+                connection.close()
+                self.assertEqual(200, response.status)
+                self.assertEqual({"staff": [{"username": "TESTER", "role": "Fixture"}]}, payload)
+                self.assertEqual("YIM", explorer._local_store().require_active_actor("YIM"))
+                with self.assertRaises(ValueError):
+                    explorer._local_store().require_active_actor("TESTER")
+            finally:
+                server.shutdown()
+                server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

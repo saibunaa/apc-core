@@ -64,7 +64,7 @@ class InvoiceDraftReconciliationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             address, service = self.serve(Path(temporary))
             selected = ["ORD-SAFE-1", "ORD-SAFE-2"]
-            status, blocked = self.request(address, "/invoices/api/previews", {"selected_order_ids": selected, "decisions": []})
+            status, blocked = self.request(address, "/drafts/api/previews", {"selected_order_ids": selected, "decisions": []})
             self.assertEqual(200, status)
             self.assertFalse(blocked["proposal"]["ready_to_save"])
             self.assertIn("selected:awb", {entry["conflict_id"] for entry in blocked["proposal"]["unresolved"]})
@@ -73,12 +73,12 @@ class InvoiceDraftReconciliationTests(unittest.TestCase):
             self.assertEqual(0, service.store.audit_count())
 
             decision = {"conflict_id": "selected:awb", "chosen_existing_value": "AWB-OPAQUE-A", "chosen_existing_source": "ORD-SAFE-1:awb"}
-            status, ready = self.request(address, "/invoices/api/previews", {"selected_order_ids": selected, "decisions": [decision]})
+            status, ready = self.request(address, "/drafts/api/previews", {"selected_order_ids": selected, "decisions": [decision]})
             self.assertEqual(200, status)
             self.assertTrue(ready["proposal"]["ready_to_save"])
             self.assertNotIn("AWB-OPAQUE-A", json.dumps(ready["proposal"]))
             self.assertNotIn("AWB-OPAQUE-B", json.dumps(ready["proposal"]))
-            status, saved = self.request(address, "/invoices/api/drafts", {"preview_ref": ready["preview_ref"], "actor": "WAT"})
+            status, saved = self.request(address, "/drafts/api/drafts", {"preview_ref": ready["preview_ref"], "actor": "WAT"})
             self.assertEqual(201, status)
             self.assertEqual(selected, saved["selected_order_ids"])
             self.assertEqual([("ORD-SAFE-1", "L-01"), ("ORD-SAFE-2", "L-02")], [(line["order_id"], line["line_ref"]) for line in saved["lines"]])
@@ -87,10 +87,10 @@ class InvoiceDraftReconciliationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             address, service = self.serve(Path(temporary))
             payload = {"selected_order_ids": ["ORD-SAFE-1"], "decisions": []}
-            _, first_preview = self.request(address, "/invoices/api/previews", payload)
-            first_status, first = self.request(address, "/invoices/api/drafts", {"preview_ref": first_preview["preview_ref"], "actor": "WAT"})
-            _, replay_preview = self.request(address, "/invoices/api/previews", payload)
-            replay_status, replay = self.request(address, "/invoices/api/drafts", {"preview_ref": replay_preview["preview_ref"], "actor": "WAT"})
+            _, first_preview = self.request(address, "/drafts/api/previews", payload)
+            first_status, first = self.request(address, "/drafts/api/drafts", {"preview_ref": first_preview["preview_ref"], "actor": "WAT"})
+            _, replay_preview = self.request(address, "/drafts/api/previews", payload)
+            replay_status, replay = self.request(address, "/drafts/api/drafts", {"preview_ref": replay_preview["preview_ref"], "actor": "WAT"})
             self.assertEqual((201, 201), (first_status, replay_status))
             self.assertEqual(first, replay)
             self.assertEqual(1, service.store.connection.execute("SELECT COUNT(*) FROM invoice_drafts").fetchone()[0])
