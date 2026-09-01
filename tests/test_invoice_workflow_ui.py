@@ -129,14 +129,16 @@ INVOICE_LIST_FIXTURES = (
 
 
 class TestInvoiceListUi(unittest.TestCase):
-    def test_list_lookup_is_limited_to_declared_fields(self):
+    def test_list_lookup_is_limited_to_customer_reference_or_order_number(self):
         from apc_core.invoice_workflow_ui import filter_invoice_list
 
-        self.assertEqual([item["display_reference"] for item in filter_invoice_list(INVOICE_LIST_FIXTURES, search="ACME")], ["ACME-T26-014", "ACME-T26-015"])
-        self.assertEqual([item["display_reference"] for item in filter_invoice_list(INVOICE_LIST_FIXTURES, search="anya raman")], ["ACME-T26-014"])
-        self.assertEqual([item["display_reference"] for item in filter_invoice_list(INVOICE_LIST_FIXTURES, search="PO-ACME-442")], ["ACME-T26-015"])
-        self.assertEqual([item["display_reference"] for item in filter_invoice_list(INVOICE_LIST_FIXTURES, search="niran p.")], ["ACME-T26-015", "INV-2026-00102"])
-        self.assertEqual(filter_invoice_list(INVOICE_LIST_FIXTURES, search="ACME-014"), ())
+        records = ({**INVOICE_LIST_FIXTURES[0], "order_number": "ORD-ACME-441"}, *INVOICE_LIST_FIXTURES[1:])
+        self.assertEqual([item["display_reference"] for item in filter_invoice_list(records, search="ACME")], ["ACME-T26-014", "ACME-T26-015"])
+        self.assertEqual([item["display_reference"] for item in filter_invoice_list(records, search="ORD-ACME-441")], ["ACME-T26-014"])
+        self.assertEqual(filter_invoice_list(records, search="anya raman"), ())
+        self.assertEqual(filter_invoice_list(records, search="PO-ACME-442"), ())
+        self.assertEqual(filter_invoice_list(records, search="niran p."), ())
+        self.assertEqual(filter_invoice_list(records, search="ACME-014"), ())
 
     def test_list_state_filters_keep_cancelled_and_corrected_distinct(self):
         from apc_core.invoice_workflow_ui import filter_invoice_list
@@ -150,7 +152,7 @@ class TestInvoiceListUi(unittest.TestCase):
         from apc_core.invoice_workflow_ui import invoice_list_html
 
         html = invoice_list_html(INVOICE_LIST_FIXTURES, search="ACME", state="Temporary")
-        for marker in ('<main class="invoice-list-shell" aria-labelledby="invoice-list-title">', '<h1 id="invoice-list-title">Invoice list</h1>', 'aria-label="Invoice list filters"', 'aria-label="Invoice list results"', '<table>', '<caption>Matching invoice records</caption>', '<th scope="col">Reference</th>', '<th scope="col">Customer</th>', '<th scope="col">Consignee</th>', '<th scope="col">Delivery / PO ref</th>', '<th scope="col">Evidence reference</th>', '<th scope="col">State</th>', '<th scope="col">Recorded / reviewed</th>', 'ACME-T26-014', 'Dr. Anya Raman · North Wing', 'ACME-T26-015', 'Dr. Ben Okafor · East Wing', 'state-badge--temporary', 'min-height:44px', 'Search by customer code, invoice reference, consignee, delivery or PO reference, or staff.', 'Search: ACME', 'Filter: Temporary'):
+        for marker in ('<main class="invoice-list-shell" aria-labelledby="invoice-list-title">', '<h1 id="invoice-list-title">Invoice list</h1>', 'aria-label="Invoice list filters"', 'aria-label="Invoice list results"', '<table>', '<caption>Matching invoice records</caption>', '<th scope="col">Reference</th>', '<th scope="col">Customer</th>', '<th scope="col">Consignee</th>', '<th scope="col">Delivery / PO ref</th>', '<th scope="col">Evidence reference</th>', '<th scope="col">State</th>', '<th scope="col">Recorded / reviewed</th>', 'ACME-T26-014', 'Dr. Anya Raman · North Wing', 'ACME-T26-015', 'Dr. Ben Okafor · East Wing', 'state-badge--temporary', 'min-height:44px', 'Search by customer code, invoice reference, or order number.', 'Search: ACME', 'Filter: Temporary'):
             self.assertIn(marker, html)
         self.assertNotIn('tabindex="0"', html)
         self.assertNotIn('.invoice-list__row:focus-visible', html)
@@ -237,6 +239,25 @@ class TestP5ReceiptViewModels(unittest.TestCase):
         self.assertIn("INV-2026-00102", invoice_detail_html(detail))
         self.assertIn("ACME-T26-014", invoice_list_html((listed,)))
         self.assertNotIn("INV-2026-00102", invoice_list_html((listed,)))
+
+    def test_p5_list_adapter_omits_reviewed_at_when_no_real_review_event_exists(self):
+        from apc_core.invoice_workflow_ui import invoice_list_html, p5_receipt_to_list_view_model
+
+        listed = p5_receipt_to_list_view_model(
+            self.TEMPORARY_RECEIPT,
+            customer_code="ACME",
+            customer_name="ACME Laboratories",
+            evidence_reference="accepted-snapshot: ACME-014",
+            staff_name="WAT",
+            recorded_at="2026-09-01 08:30",
+            reviewed_at=None,
+        )
+
+        self.assertNotIn("reviewed_at", listed)
+        html = invoice_list_html((listed,))
+        self.assertIn("Recorded 2026-09-01 08:30", html)
+        self.assertNotIn("Last reviewed", html)
+        self.assertNotIn("Reviewed", html)
 
     def test_p5_receipt_keeps_consignee_and_delivery_reference_separate(self):
         from apc_core.invoice_workflow_ui import (

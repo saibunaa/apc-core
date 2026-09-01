@@ -140,7 +140,8 @@ def p5_receipt_to_list_view_model(
     evidence_reference: str,
     staff_name: str,
     recorded_at: str,
-    reviewed_at: str,
+    reviewed_at: str | None,
+    order_number: str | None = None,
 ) -> dict[str, object]:
     """Adapt a supplied P5 receipt plus display-only fixture fields for list rendering."""
     source = _p5_receipt(receipt)
@@ -150,11 +151,10 @@ def p5_receipt_to_list_view_model(
         "evidence_reference": evidence_reference,
         "staff_name": staff_name,
         "recorded_at": recorded_at,
-        "reviewed_at": reviewed_at,
     }
     for key in external:
         _required_text(external, key)
-    return {
+    result: dict[str, object] = {
         "display_reference": _required_text(source, "temporary_reference"),
         "customer_code": customer_code,
         "customer_name": customer_name,
@@ -164,8 +164,12 @@ def p5_receipt_to_list_view_model(
         "state": _P5_STATE_LABELS[_required_text(source, "state")],
         "staff_name": staff_name,
         "recorded_at": recorded_at,
-        "reviewed_at": reviewed_at,
     }
+    if reviewed_at is not None:
+        result["reviewed_at"] = _required_text({"reviewed_at": reviewed_at}, "reviewed_at")
+    if order_number is not None:
+        result["order_number"] = _required_text({"order number": order_number}, "order number")
+    return result
 
 
 def invoice_detail_html(invoice: Mapping[str, object]) -> str:
@@ -198,7 +202,7 @@ def invoice_detail_html(invoice: Mapping[str, object]) -> str:
 <dl aria-label="Invoice attribution and reference">
 <dt>Document reference</dt><dd>{_text(document_id)}</dd>
 <dt>Number</dt><dd>{_text(number)}</dd>
-<dt>Staff</dt><dd>{_text(_required_text(invoice, 'staff_name'))}</dd>
+<dt>Created by</dt><dd>{_text(_required_text(invoice, 'staff_name'))}</dd>
 <dt>Customer</dt><dd>{_text(_required_text(invoice, 'customer_name'))}</dd>
 <dt>Evidence reference</dt><dd>{_text(_required_text(invoice, 'evidence_reference'))}</dd>
 </dl>
@@ -214,9 +218,7 @@ _LIST_STATES = ("All", "Temporary", "Real", "Cancelled", "Corrected")
 _LIST_SEARCH_KEYS = (
     "customer_code",
     "display_reference",
-    "consignee",
-    "delivery_po_reference",
-    "staff_name",
+    "order_number",
 )
 _LIST_REQUIRED_KEYS = (
     "display_reference",
@@ -228,7 +230,6 @@ _LIST_REQUIRED_KEYS = (
     "state",
     "staff_name",
     "recorded_at",
-    "reviewed_at",
 )
 
 
@@ -237,6 +238,8 @@ def _list_record(record: object) -> Mapping[str, object]:
         raise ValueError("each invoice record must be a mapping")
     for key in _LIST_REQUIRED_KEYS:
         _required_text(record, key)
+    if "order_number" in record:
+        _required_text(record, "order_number")
     if _required_text(record, "state") not in _STATES:
         raise ValueError("invoice record has an unsupported state")
     return record
@@ -258,7 +261,9 @@ def filter_invoice_list(
         record = _list_record(candidate)
         if state != "All" and record["state"] != state:
             continue
-        if needle and not any(needle in _required_text(record, key).casefold() for key in _LIST_SEARCH_KEYS):
+        if needle and not any(
+            needle in str(record.get(key, "")).casefold() for key in _LIST_SEARCH_KEYS
+        ):
             continue
         selected.append(record)
     return tuple(selected)
@@ -268,6 +273,8 @@ def _list_rows(records: Sequence[Mapping[str, object]]) -> str:
     rows: list[str] = []
     for record in records:
         state = _required_text(record, "state")
+        reviewed_at = record.get("reviewed_at")
+        reviewed = "" if reviewed_at is None else f'<br><span>Last reviewed {_text(reviewed_at)}</span>'
         rows.append(
             f'''<tr class="invoice-list__row">
 <td class="invoice-list__primary">{_text(record["display_reference"])}<br><span>{_text(record["customer_code"])}</span></td>
@@ -276,7 +283,7 @@ def _list_rows(records: Sequence[Mapping[str, object]]) -> str:
 <td>{_text(record["delivery_po_reference"])}</td>
 <td>{_text(record["evidence_reference"])}</td>
 <td><span class="state-badge state-badge--{state.lower()}" aria-label="Invoice state: {_text(state)}">{_text(state)}</span></td>
-<td>Recorded {_text(record["recorded_at"])}<br><span>Last reviewed {_text(record["reviewed_at"])}</span></td>
+<td>Recorded {_text(record["recorded_at"])}{reviewed}</td>
 </tr>'''
         )
     return "".join(rows) or '<tr><td colspan="7">No matching invoice records.</td></tr>'
@@ -287,6 +294,7 @@ def invoice_list_html(
 ) -> str:
     """Render a static invoice-list candidate from supplied fixture records only."""
     matches = filter_invoice_list(records, search=search, state=state)
+    timestamp_heading = "Recorded / reviewed" if any("reviewed_at" in record for record in matches) else "Recorded"
     return f'''<!doctype html>
 <html lang="en">
 <head>
@@ -302,8 +310,8 @@ def invoice_list_html(
 <article class="invoice-list-card">
 <p class="invoice-list__eyebrow">Fixture display · read only</p>
 <h1 id="invoice-list-title">Invoice list</h1>
-<section class="invoice-list__summary" aria-label="Invoice list filters"><strong>Search by customer code, invoice reference, consignee, delivery or PO reference, or staff.</strong><span>Search: {_text(search or "All records")}</span><span>Filter: {_text(state)}</span><span>{len(matches)} matching record{'s' if len(matches) != 1 else ''}</span></section>
-<section aria-label="Invoice list results"><table><caption>Matching invoice records</caption><thead><tr><th scope="col">Reference</th><th scope="col">Customer</th><th scope="col">Consignee</th><th scope="col">Delivery / PO ref</th><th scope="col">Evidence reference</th><th scope="col">State</th><th scope="col">Recorded / reviewed</th></tr></thead><tbody>{_list_rows(matches)}</tbody></table></section>
+<section class="invoice-list__summary" aria-label="Invoice list filters"><strong>Search by customer code, invoice reference, or order number.</strong><span>Search: {_text(search or "All records")}</span><span>Filter: {_text(state)}</span><span>{len(matches)} matching record{'s' if len(matches) != 1 else ''}</span></section>
+<section aria-label="Invoice list results"><table><caption>Matching invoice records</caption><thead><tr><th scope="col">Reference</th><th scope="col">Customer</th><th scope="col">Consignee</th><th scope="col">Delivery / PO ref</th><th scope="col">Evidence reference</th><th scope="col">State</th><th scope="col">{timestamp_heading}</th></tr></thead><tbody>{_list_rows(matches)}</tbody></table></section>
 </article>
 </main>
 </body>
