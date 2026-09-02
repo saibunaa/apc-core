@@ -7,6 +7,8 @@ import stat
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+from .active_staff_provider import ActiveStaffProvider
+from .core_staff_registry import CURRENT_IDENTITY_STAFF
 from .invoice_conversion_source import InvoiceConversionSource, ReadOnlyInvoiceSourceError
 from .invoice_draft_service import InvoiceDraftService
 from .invoice_drafts import InvoiceDraftStore
@@ -185,12 +187,9 @@ def load_accepted_customer_price_order_runtime(manifest_path: Path, *, data_dir:
     awb_explorer = invoice_source = invoice_draft_service = source_invoice_explorer = None
     try:
         if legacy_invoice_snapshot is None:
-            try:
-                source_invoice_explorer = SourceInvoiceExplorer.from_open_descriptor(descriptor, artifact_path)
-            except (ReadOnlySourceInvoiceError, OSError, ValueError, sqlite3.Error):
-                source_invoice_explorer = None
-            finally:
-                os.lseek(descriptor, 0, os.SEEK_SET)
+            # Fail-closed: the accepted artifact alone must never mount source_invoice
+            # routes. Legacy invoices require an explicit, separately verified snapshot.
+            source_invoice_explorer = None
         else:
             assert legacy_invoice_sha256 is not None
             source_invoice_explorer = load_verified_legacy_invoice_snapshot(legacy_invoice_snapshot, legacy_invoice_sha256)
@@ -338,6 +337,10 @@ def main() -> None:
         source_invoice_explorer = item_explorer.source_invoice_explorer
         if type(source_invoice_explorer) is SourceInvoiceExplorer:
             handler_kwargs["source_invoice_explorer"] = source_invoice_explorer
+        if args.legacy_invoice_snapshot is not None:
+            # Verified legacy-invoice mode must never force the shared staff picker to
+            # migrate/seed Core SQLite; mutation authority still requires it separately.
+            handler_kwargs["identity_staff_provider"] = ActiveStaffProvider(CURRENT_IDENTITY_STAFF)
         server = ThreadingHTTPServer((args.host, args.port), make_handler(
             item_explorer, manifest, customer_explorer, customer_price_module, order_explorer, awb_explorer,
             invoice_source=invoice_source, invoice_draft_service=invoice_draft_service,

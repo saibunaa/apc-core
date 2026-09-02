@@ -380,6 +380,43 @@ if(thai!=='2 · ITEM-2 · 5 · ชื่อจากออเดอร์ · Ite
 '''
         subprocess.run(["node", "-e", harness, str(ui_path)], check=True, capture_output=True, text=True)
 
+    def test_toggling_language_on_an_open_legacy_invoice_never_loses_description_price_or_amount(self):
+        """PR #38 blocker 2: legacy invoices have no EN/TH split; the toggle must not corrupt their lines."""
+        ui_path = Path(__file__).parents[1] / "apc_core" / "order_invoice_ui.py"
+        harness = r'''
+const fs=require('fs');
+const source=fs.readFileSync(process.argv[1], 'utf8');
+const match=source.match(/function toggleLanguage\(\)\{[\s\S]*?(?=async function openSourceOrder)/);
+if(!match) throw new Error('toggleLanguage missing');
+let statusText='';
+const status={set textContent(v){statusText=v},get textContent(){return statusText}};
+let renderLinePageCalls=0;
+function renderLinePage(){renderLinePageCalls++}
+let ariaPressed='false',toggleText='ไทย';
+const languageToggle={setAttribute(name,value){if(name==='aria-pressed')ariaPressed=value},set textContent(v){toggleText=v},get textContent(){return toggleText}};
+const pageJump={value:'1'};
+let currentLanguage='english';
+const linePage={total:1,lines:[{line_no:'1',item_id:'ITEM-1',qty:'1',description:'Legacy widget',price:'10.00',amount:'10.00'}]};
+const selected={record_type:'source_invoice',source_invoice_number:'C//2026/001'};
+eval(match[0]);
+toggleLanguage();
+if(renderLinePageCalls!==0) throw new Error('renderLinePage must not run for a legacy invoice line page (it drops price/amount)');
+if(currentLanguage!=='english') throw new Error('language must not change for a legacy invoice line page');
+if(ariaPressed!=='false') throw new Error('toggle must not report pressed for a legacy invoice line page');
+if(!/only available for Source Order/i.test(statusText)) throw new Error('expected a not-meaningful-here message, got: '+statusText);
+'''
+        subprocess.run(["node", "-e", harness, str(ui_path)], check=True, capture_output=True, text=True)
+
+    def test_language_toggle_is_disabled_while_a_legacy_invoice_is_open_and_re_enabled_for_source_orders(self):
+        """PR #38 blocker 2: hide/disable the toggle safely when it is not meaningful."""
+        source_text = (Path(__file__).parents[1] / "apc_core" / "order_invoice_ui.py").read_text(encoding="utf-8")
+        open_source_invoice = source_text[source_text.index("async function openSourceInvoice"):source_text.index("function openLinePage(offset)")]
+        open_source_order = source_text[source_text.index("async function openSourceOrder"):source_text.index("async function openSourceInvoice")]
+        self.assertIn("languageToggle.disabled=true", open_source_invoice)
+        self.assertIn("languageToggle.disabled=false", open_source_order)
+        self.assertIn("languageToggle.disabled=true", source_text[source_text.index("function clearLinePage()"):source_text.index("function selectedType()")])
+        self.assertIn('id="order-invoice-language-toggle" class="secondary" type="button" aria-pressed="false" disabled', source_text)
+
     def test_source_order_mapping_retains_bounded_page_metadata(self):
         from apc_core.order_invoice_workspace import map_source_order
 

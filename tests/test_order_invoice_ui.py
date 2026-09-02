@@ -99,7 +99,7 @@ class TestOrderInvoiceWorkspaceUi(unittest.TestCase):
         from apc_core.order_invoice_ui import order_invoice_html
 
         html = order_invoice_html()
-        self.assertIn("function clearLinePage(){linePage=null;lineOffset=0;lineWindow.replaceChildren();detail.textContent=''}", html)
+        self.assertIn("function clearLinePage(){linePage=null;lineOffset=0;lineWindow.replaceChildren();detail.textContent='';languageToggle.disabled=true}", html)
         self.assertIn('browseOffset=0;browseHasNext=false;clearLinePage()', html)
 
     def test_workspace_uses_accessible_tabs_safe_arrow_handling_and_visible_language_toggle(self):

@@ -543,7 +543,8 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
 
 
 class TestOrderInvoiceRuntimeLifecycle(unittest.TestCase):
-    def test_runtime_wires_source_invoice_reader_from_accepted_descriptor_and_item_close_owns_it(self):
+    def test_accepted_descriptor_alone_never_wires_a_source_invoice_reader_without_an_explicit_verified_snapshot(self):
+        """Fail-closed: the accepted artifact must not mount source_invoice routes by itself (PR #38 blocker 1)."""
         from apc_core import server
         from apc_core.item_explorer import ItemExplorer
 
@@ -556,7 +557,6 @@ class TestOrderInvoiceRuntimeLifecycle(unittest.TestCase):
             item._connection = Mock()
             item._store = None
             item._source_invoice_explorer = None
-            reader = Mock()
             manifest = {"accepted_artifact_sha256": "a" * 64, "capabilities": {}}
 
             def build_item(_descriptor, _artifact, *, data_dir):
@@ -566,7 +566,7 @@ class TestOrderInvoiceRuntimeLifecycle(unittest.TestCase):
             try:
                 with patch.object(server, "_read_accepted_manifest", return_value=(descriptor, artifact, manifest)), \
                      patch.object(server.ItemExplorer, "from_open_descriptor", side_effect=build_item) as item_factory, \
-                     patch.object(server.SourceInvoiceExplorer, "from_open_descriptor", return_value=reader) as reader_factory:
+                     patch.object(server.SourceInvoiceExplorer, "from_open_descriptor") as reader_factory:
                     runtime = server.load_accepted_customer_price_order_runtime(Path(directory) / "manifest.json")
 
                 self.assertEqual(8, len(runtime))
@@ -574,10 +574,9 @@ class TestOrderInvoiceRuntimeLifecycle(unittest.TestCase):
                 self.assertIsNone(runtime[5])
                 self.assertIsNone(runtime[6])
                 item_factory.assert_called_once_with(descriptor, artifact, data_dir=None)
-                reader_factory.assert_called_once_with(descriptor, artifact)
-                self.assertIs(reader, item.source_invoice_explorer)
+                reader_factory.assert_not_called()
+                self.assertIsNone(item.source_invoice_explorer)
                 item.close()
-                reader.close.assert_called_once_with()
                 item._connection.close.assert_called_once_with()
             finally:
                 try:
