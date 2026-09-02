@@ -41,6 +41,8 @@ class _BrowseOrderSource:
 class _BrowseInvoiceSource:
     def __init__(self, row=None, page=None):
         self.calls = 0
+        self.open_calls = 0
+        self.source_sha256 = "b" * 64
         self.row = row or {
             "source_type": "source_invoice", "invoice_id": "C//2026/001", "invoice_date": "2026-08-29",
             "customer_id": "C/001", "customer_name": "Customer One", "slash_family": "repeated_slash",
@@ -55,6 +57,15 @@ class _BrowseInvoiceSource:
         return {
             "total": 1, "limit": 1, "offset": 0, "has_more": False, "next_offset": None,
             "invoices": [self.row],
+        }
+
+    def open_invoice(self, invoice_id, *, limit, offset):
+        self.open_calls += 1
+        return {
+            "source_sha256": self.source_sha256, "source_type": "source_invoice", "invoice_id": invoice_id,
+            "slash_family": "repeated_slash", "header": {"invoice_date": "2026-08-29", "customer_id": "C/001", "customer_name": "Customer One"},
+            "total": 1, "limit": limit, "offset": offset, "has_more": False, "next_offset": None,
+            "lines": [{"line_no": "1", "item_id": "ITEM-1", "description": "Fixture line", "qty": "1", "price": "2", "amount": "2", "sub_customer": ""}],
         }
 
 
@@ -112,7 +123,7 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
         self.assertEqual([HTTPStatus.OK], statuses)
         html = request.wfile.getvalue().decode("utf-8")
         self.assertIn("Source Orders", html)
-        self.assertIn("Source Invoices", html)
+        self.assertIn("Legacy Invoices · Read-only", html)
         self.assertNotIn("Core Drafts", html)
         self.assertNotIn("local draft review", html)
 
@@ -203,6 +214,42 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
             },
             set(payload["lines"][0]),
         )
+
+    def test_open_legacy_invoice_is_closed_read_only_without_order_or_mutation_fields(self):
+        source = _BrowseInvoiceSource()
+        statuses, payload = self.get(
+            "/order-invoice/api/source-invoices/C%2F%2F2026%2F001?limit=2&offset=0",
+            source_invoice_explorer=source,
+        )
+
+        self.assertEqual([HTTPStatus.OK], statuses)
+        self.assertEqual(1, source.open_calls)
+        self.assertEqual(
+            {"record_type", "record_id", "invoice_id", "invoice_date", "customer_id", "customer_name", "lines", "total", "limit", "offset", "has_more", "next_offset"},
+            set(payload),
+        )
+        self.assertEqual("source_invoice", payload["record_type"])
+        self.assertEqual("source_invoice:C//2026/001", payload["record_id"])
+        self.assertEqual({"line_no", "item_id", "description", "qty", "price", "amount", "sub_customer"}, set(payload["lines"][0]))
+        self.assertNotIn("order", repr(payload).lower())
+        self.assertNotIn("source_sha256", repr(payload))
+        self.assertNotIn("action", repr(payload).lower())
+
+    def test_open_legacy_invoice_rejects_a_reader_page_not_bound_to_requested_id_or_page(self):
+        source = _BrowseInvoiceSource()
+        original_open = source.open_invoice
+
+        def hostile_open(invoice_id, *, limit, offset):
+            return {**original_open(invoice_id, limit=limit, offset=offset), "invoice_id": "OTHER/2026/001"}
+
+        source.open_invoice = hostile_open
+        statuses, payload = self.get(
+            "/order-invoice/api/source-invoices/C%2F%2F2026%2F001?limit=2&offset=0",
+            source_invoice_explorer=source,
+        )
+
+        self.assertEqual([HTTPStatus.BAD_REQUEST], statuses)
+        self.assertEqual({"error": "invalid legacy invoice detail query"}, payload)
 
     def test_open_source_order_rejects_bad_page_parameters_before_reading(self):
         source = _BrowseOrderSource()
@@ -496,7 +543,8 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
 
 
 class TestOrderInvoiceRuntimeLifecycle(unittest.TestCase):
-    def test_runtime_wires_source_invoice_reader_from_accepted_descriptor_and_item_close_owns_it(self):
+    def test_accepted_descriptor_alone_never_wires_a_source_invoice_reader_without_an_explicit_verified_snapshot(self):
+        """Fail-closed: the accepted artifact must not mount source_invoice routes by itself (PR #38 blocker 1)."""
         from apc_core import server
         from apc_core.item_explorer import ItemExplorer
 
@@ -509,7 +557,6 @@ class TestOrderInvoiceRuntimeLifecycle(unittest.TestCase):
             item._connection = Mock()
             item._store = None
             item._source_invoice_explorer = None
-            reader = Mock()
             manifest = {"accepted_artifact_sha256": "a" * 64, "capabilities": {}}
 
             def build_item(_descriptor, _artifact, *, data_dir):
@@ -519,7 +566,7 @@ class TestOrderInvoiceRuntimeLifecycle(unittest.TestCase):
             try:
                 with patch.object(server, "_read_accepted_manifest", return_value=(descriptor, artifact, manifest)), \
                      patch.object(server.ItemExplorer, "from_open_descriptor", side_effect=build_item) as item_factory, \
-                     patch.object(server.SourceInvoiceExplorer, "from_open_descriptor", return_value=reader) as reader_factory:
+                     patch.object(server.SourceInvoiceExplorer, "from_open_descriptor") as reader_factory:
                     runtime = server.load_accepted_customer_price_order_runtime(Path(directory) / "manifest.json")
 
                 self.assertEqual(8, len(runtime))
@@ -527,10 +574,9 @@ class TestOrderInvoiceRuntimeLifecycle(unittest.TestCase):
                 self.assertIsNone(runtime[5])
                 self.assertIsNone(runtime[6])
                 item_factory.assert_called_once_with(descriptor, artifact, data_dir=None)
-                reader_factory.assert_called_once_with(descriptor, artifact)
-                self.assertIs(reader, item.source_invoice_explorer)
+                reader_factory.assert_not_called()
+                self.assertIsNone(item.source_invoice_explorer)
                 item.close()
-                reader.close.assert_called_once_with()
                 item._connection.close.assert_called_once_with()
             finally:
                 try:

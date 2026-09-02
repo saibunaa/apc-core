@@ -27,7 +27,7 @@ _MAX_TEMPLATE_ROWS = 250
 
 def invoice_draft_handoff_html() -> str:
     """Return the Order-screen-only handoff control for an explicitly opened order."""
-    return """<button id=\"start-invoice-draft\" type=\"button\" class=\"guarded\" disabled>Start invoice draft</button><script>(()=>{const button=document.getElementById('start-invoice-draft');let openedOrderId='';function sync(){button.disabled=!openedOrderId;button.classList.toggle('guarded',!openedOrderId)}window.addEventListener('apc-core-opened-order',event=>{openedOrderId=typeof event.detail==='string'?event.detail:'';sync()});button.addEventListener('click',()=>{if(!openedOrderId)return;sessionStorage.setItem('apc-core-invoice-handoff',openedOrderId);location.assign('../invoices/')});sync()})();</script>"""
+    return """<button id=\"start-invoice-draft\" type=\"button\" class=\"guarded\" disabled>Start invoice draft</button><script>(()=>{const button=document.getElementById('start-invoice-draft');let openedOrderId='';function sync(){button.disabled=!openedOrderId;button.classList.toggle('guarded',!openedOrderId)}window.addEventListener('apc-core-opened-order',event=>{openedOrderId=typeof event.detail==='string'?event.detail:'';sync()});button.addEventListener('click',()=>{if(!openedOrderId)return;sessionStorage.setItem('apc-core-invoice-handoff',openedOrderId);location.assign('../drafts/')});sync()})();</script>"""
 
 
 class ReadOnlySourceContractError(ValueError):

@@ -75,8 +75,20 @@ class TestInvoiceDraftRoutes(unittest.TestCase):
             status, _, body = self.request(address, "GET", "/")
             self.assertEqual(200, status)
             self.assertNotIn(b"Invoice", body)
-            for path in ("/invoices/api/candidates?customer_id=C-1&shipment_date=2026-08-02", "/invoices/api/preview", "/invoices/api/drafts", "/invoices/api/drafts/x"):
+            for path in ("/drafts/api/candidates?customer_id=C-1&shipment_date=2026-08-02", "/drafts/api/preview", "/drafts/api/drafts", "/drafts/api/drafts/x"):
                 self.assertEqual(404, self.request(address, "GET", path)[0])
+            for path in ("/invoices/", "/program/invoices/"):
+                for method in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+                    self.assertEqual(410, self.request(address, method, path)[0], (method, path))
+
+    def test_drafts_own_the_new_namespace_and_the_former_invoice_namespace_is_gone(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            address, _, _ = self.serve(Path(temporary))
+            self.assertEqual(200, self.request(address, "GET", "/drafts/")[0])
+            self.assertEqual(200, self.request(address, "GET", "/drafts/api/candidates?customer_id=C-1&shipment_date=2026-08-02")[0])
+            for path in ("/invoices", "/invoices/", "/invoices/api/candidates?customer_id=C-1&shipment_date=2026-08-02", "/invoices/api/previews", "/invoices/api/drafts"):
+                for method in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+                    self.assertEqual(410, self.request(address, method, path)[0], (method, path))
 
     def test_candidates_are_explicit_read_only_and_never_awb_linked_or_selected(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -84,8 +96,8 @@ class TestInvoiceDraftRoutes(unittest.TestCase):
             address, source, state = self.serve(root)
             before_source = hashlib.sha256(source.read_bytes()).hexdigest()
             before_state = hashlib.sha256(state.read_bytes()).hexdigest()
-            self.assertEqual(400, self.request(address, "GET", "/invoices/api/candidates")[0])
-            status, headers, body = self.request(address, "GET", "/invoices/api/candidates?customer_id=C-1&shipment_date=2026-08-02")
+            self.assertEqual(400, self.request(address, "GET", "/drafts/api/candidates")[0])
+            status, headers, body = self.request(address, "GET", "/drafts/api/candidates?customer_id=C-1&shipment_date=2026-08-02")
             self.assertEqual(200, status)
             self.assertIn(("Cache-Control", "no-store"), headers)
             payload = json.loads(body)
@@ -113,7 +125,7 @@ class TestInvoiceDraftRoutes(unittest.TestCase):
                 invoice_draft_service=service,
                 accepted_snapshot_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
             )
-            for path in ("/invoices/", "/invoices/api/candidates?customer_id=C-1&shipment_date=2026-08-02"):
+            for path in ("/drafts/", "/drafts/api/candidates?customer_id=C-1&shipment_date=2026-08-02"):
                 denied = object.__new__(handler_class)
                 denied.client_address = ("100.69.141.75", 1)
                 denied.path = path
@@ -129,43 +141,43 @@ class TestInvoiceDraftRoutes(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             address, _, state = self.serve(Path(temporary))
             before_state = hashlib.sha256(state.read_bytes()).hexdigest()
-            self.assertEqual(404, self.request(address, "GET", "/invoices/api/preview?order_id=ORD-1")[0])
+            self.assertEqual(404, self.request(address, "GET", "/drafts/api/preview?order_id=ORD-1")[0])
             headers = {"Content-Type": "application/json", "Origin": "http://program.test"}
-            self.assertEqual(400, self.request(address, "POST", "/invoices/api/previews", json.dumps({"selected_order_ids": []}).encode(), headers)[0])
-            status, _, body = self.request(address, "POST", "/invoices/api/previews", json.dumps({"selected_order_ids": ["ORD-1"], "decisions": []}).encode(), headers)
+            self.assertEqual(400, self.request(address, "POST", "/drafts/api/previews", json.dumps({"selected_order_ids": []}).encode(), headers)[0])
+            status, _, body = self.request(address, "POST", "/drafts/api/previews", json.dumps({"selected_order_ids": ["ORD-1"], "decisions": []}).encode(), headers)
             self.assertEqual(200, status)
             preview = json.loads(body)
             self.assertEqual({"preview_ref", "proposal"}, set(preview))
             self.assertNotIn("ORD-1", preview["preview_ref"])
             self.assertEqual(before_state, hashlib.sha256(state.read_bytes()).hexdigest())
-            self.assertEqual(400, self.request(address, "POST", "/invoices/api/drafts", json.dumps({"proposal": preview["proposal"], "actor": "WAT"}).encode(), headers)[0])
-            saved = self.request(address, "POST", "/invoices/api/drafts", json.dumps({"preview_ref": preview["preview_ref"], "actor": "WAT"}).encode(), headers)
+            self.assertEqual(400, self.request(address, "POST", "/drafts/api/drafts", json.dumps({"proposal": preview["proposal"], "actor": "WAT"}).encode(), headers)[0])
+            saved = self.request(address, "POST", "/drafts/api/drafts", json.dumps({"preview_ref": preview["preview_ref"], "actor": "WAT"}).encode(), headers)
             self.assertEqual(201, saved[0])
-            self.assertEqual(400, self.request(address, "POST", "/invoices/api/drafts", json.dumps({"preview_ref": preview["preview_ref"], "actor": "WAT"}).encode(), headers)[0])
+            self.assertEqual(400, self.request(address, "POST", "/drafts/api/drafts", json.dumps({"preview_ref": preview["preview_ref"], "actor": "WAT"}).encode(), headers)[0])
             for method in ("PUT", "PATCH", "DELETE"):
-                self.assertEqual(405, self.request(address, method, "/invoices/api/drafts")[0])
+                self.assertEqual(405, self.request(address, method, "/drafts/api/drafts")[0])
 
     def test_preview_order_count_is_bounded_before_source_reads(self):
         with tempfile.TemporaryDirectory() as temporary:
             address, _, _ = self.serve(Path(temporary))
             body = json.dumps({"selected_order_ids": [f"ORD-{value}" for value in range(21)], "decisions": []})
-            status, _, _ = self.request(address, "POST", "/invoices/api/previews", body, {"Content-Type": "application/json", "Origin": "http://program.test"})
+            status, _, _ = self.request(address, "POST", "/drafts/api/previews", body, {"Content-Type": "application/json", "Origin": "http://program.test"})
             self.assertEqual(400, status)
 
     def test_save_is_origin_and_actor_guarded_and_returns_only_allowlisted_draft_shape(self):
         with tempfile.TemporaryDirectory() as temporary:
             address, source, state = self.serve(Path(temporary))
             headers = {"Content-Type": "application/json", "Origin": "http://program.test"}
-            preview_status, _, preview_body = self.request(address, "POST", "/invoices/api/previews", json.dumps({"selected_order_ids": ["ORD-1"], "decisions": []}).encode(), headers)
+            preview_status, _, preview_body = self.request(address, "POST", "/drafts/api/previews", json.dumps({"selected_order_ids": ["ORD-1"], "decisions": []}).encode(), headers)
             self.assertEqual(200, preview_status)
             body = json.dumps({"preview_ref": json.loads(preview_body)["preview_ref"], "actor": "WAT"}).encode()
             before = hashlib.sha256(state.read_bytes()).hexdigest()
             invalid_body = json.dumps({"preview_ref": "not-issued", "actor": "UNKNOWN"}).encode()
             for headers in ({"Content-Type": "text/plain"}, {"Content-Type": "application/json"}, {"Content-Type": "application/json", "Origin": "https://hostile.test"}, {"Content-Type": "application/json", "Origin": "http://program.test"}):
                 candidate = invalid_body if headers.get("Content-Type") == "application/json" else b"{}"
-                self.assertIn(self.request(address, "POST", "/invoices/api/drafts", candidate, headers)[0], (400, 403, 415))
+                self.assertIn(self.request(address, "POST", "/drafts/api/drafts", candidate, headers)[0], (400, 403, 415))
             self.assertEqual(before, hashlib.sha256(state.read_bytes()).hexdigest())
-            status, _, response = self.request(address, "POST", "/invoices/api/drafts", body, {"Content-Type": "application/json", "Origin": "http://program.test"})
+            status, _, response = self.request(address, "POST", "/drafts/api/drafts", body, {"Content-Type": "application/json", "Origin": "http://program.test"})
             self.assertEqual(201, status)
             saved = json.loads(response)
             self.assertEqual({"draft_id", "accepted_snapshot_sha256", "created_by", "created_at", "status", "selected_order_ids", "lines"}, set(saved))
@@ -175,5 +187,5 @@ class TestInvoiceDraftRoutes(unittest.TestCase):
     def test_no_detail_list_or_issuance_print_export_sync_or_awb_write_surface_exists(self):
         with tempfile.TemporaryDirectory() as temporary:
             address, _, _ = self.serve(Path(temporary))
-            for path in ("/invoices/api/drafts/x", "/invoices/api/drafts", "/invoices/api/issue", "/invoices/api/print", "/invoices/api/export", "/invoices/api/sync", "/invoices/api/awb"):
+            for path in ("/drafts/api/drafts/x", "/drafts/api/drafts", "/drafts/api/issue", "/drafts/api/print", "/drafts/api/export", "/drafts/api/sync", "/drafts/api/awb"):
                 self.assertEqual(404, self.request(address, "GET", path)[0])

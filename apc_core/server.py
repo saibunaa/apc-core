@@ -7,6 +7,8 @@ import stat
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+from .active_staff_provider import ActiveStaffProvider
+from .core_staff_registry import CURRENT_IDENTITY_STAFF
 from .invoice_conversion_source import InvoiceConversionSource, ReadOnlyInvoiceSourceError
 from .invoice_draft_service import InvoiceDraftService
 from .invoice_drafts import InvoiceDraftStore
@@ -44,6 +46,32 @@ def _sha256_descriptor(descriptor: int) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def load_verified_legacy_invoice_snapshot(snapshot_path: Path, expected_sha256: str) -> SourceInvoiceExplorer:
+    """Open one separately approved staged legacy-invoice snapshot, read-only."""
+    if type(expected_sha256) is not str or len(expected_sha256) != 64 or any(char not in "0123456789abcdef" for char in expected_sha256):
+        raise RuntimeContractError("invalid legacy invoice snapshot hash")
+    try:
+        snapshot_path = Path(snapshot_path)
+        metadata = os.lstat(snapshot_path)
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise ValueError
+        if Path(str(snapshot_path) + "-wal").exists() or Path(str(snapshot_path) + "-shm").exists():
+            raise ValueError
+        descriptor = os.open(snapshot_path, os.O_RDONLY | os.O_NOFOLLOW)
+    except (OSError, ValueError) as error:
+        raise RuntimeContractError("refusing legacy invoice snapshot") from error
+    try:
+        reader = SourceInvoiceExplorer.from_open_descriptor(descriptor, snapshot_path)
+        if reader.source_sha256 != expected_sha256:
+            reader.close()
+            raise ValueError
+        return reader
+    except (ReadOnlySourceInvoiceError, OSError, ValueError, sqlite3.Error) as error:
+        raise RuntimeContractError("refusing legacy invoice snapshot") from error
+    finally:
+        os.close(descriptor)
 
 
 def _read_accepted_manifest(manifest_path: Path) -> tuple[int, Path, dict]:
@@ -150,18 +178,21 @@ def load_accepted_customer_price_runtime(manifest_path: Path, *, data_dir: Path 
         os.close(descriptor)
 
 
-def load_accepted_customer_price_order_runtime(manifest_path: Path, *, data_dir: Path | None = None, with_invoice_drafts: bool = False) -> tuple:
-    """Build all Order Forms dependencies from the one verified accepted descriptor."""
+def load_accepted_customer_price_order_runtime(manifest_path: Path, *, data_dir: Path | None = None, with_invoice_drafts: bool = False, legacy_invoice_snapshot: Path | None = None, legacy_invoice_sha256: str | None = None) -> tuple:
+    """Build order dependencies and optionally one separately verified legacy-invoice reader."""
+    if (legacy_invoice_snapshot is None) != (legacy_invoice_sha256 is None):
+        raise RuntimeContractError("legacy invoice snapshot path and hash must be supplied together")
     descriptor, artifact_path, manifest = _read_accepted_manifest(manifest_path)
     item_explorer = customer_explorer = price_module = order_explorer = None
     awb_explorer = invoice_source = invoice_draft_service = source_invoice_explorer = None
     try:
-        try:
-            source_invoice_explorer = SourceInvoiceExplorer.from_open_descriptor(descriptor, artifact_path)
-        except (ReadOnlySourceInvoiceError, OSError, ValueError, sqlite3.Error):
+        if legacy_invoice_snapshot is None:
+            # Fail-closed: the accepted artifact alone must never mount source_invoice
+            # routes. Legacy invoices require an explicit, separately verified snapshot.
             source_invoice_explorer = None
-        finally:
-            os.lseek(descriptor, 0, os.SEEK_SET)
+        else:
+            assert legacy_invoice_sha256 is not None
+            source_invoice_explorer = load_verified_legacy_invoice_snapshot(legacy_invoice_snapshot, legacy_invoice_sha256)
         item_explorer = ItemExplorer.from_open_descriptor(descriptor, artifact_path, data_dir=data_dir)
         if source_invoice_explorer is not None:
             item_explorer.attach_source_invoice_explorer(source_invoice_explorer)
@@ -260,6 +291,8 @@ def recovery_test_mode(*, data_dir: Path) -> tuple[RecoveryAuthorizer | None, Re
 def main() -> None:
     parser = argparse.ArgumentParser(description="Loopback-only APC Core Item Explorer pilot")
     parser.add_argument("--manifest", required=True, type=Path)
+    parser.add_argument("--legacy-invoice-snapshot", type=Path)
+    parser.add_argument("--legacy-invoice-sha256")
     parser.add_argument("--port", default=8769, type=int)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--container-ingress", action="store_true", help="allow container-network ingress; never publish a host port")
@@ -279,7 +312,10 @@ def main() -> None:
     except RuntimeContractError as error:
         parser.error(str(error))
     recovery_authorizer, recovery_service = recovery_test_mode(data_dir=data_dir or Path("."))
-    item_explorer, customer_explorer, customer_price_module, order_explorer, awb_explorer, invoice_source, invoice_draft_service, manifest = load_accepted_customer_price_order_runtime(args.manifest, data_dir=data_dir, with_invoice_drafts=invoice_drafts_enabled())
+    item_explorer, customer_explorer, customer_price_module, order_explorer, awb_explorer, invoice_source, invoice_draft_service, manifest = load_accepted_customer_price_order_runtime(
+        args.manifest, data_dir=data_dir, with_invoice_drafts=invoice_drafts_enabled(),
+        legacy_invoice_snapshot=args.legacy_invoice_snapshot, legacy_invoice_sha256=args.legacy_invoice_sha256,
+    )
     def close_core_modules_for_recovery() -> None:
         """Maintenance boundary: no Core SQLite connection survives a generation switch."""
         if invoice_draft_service is not None:
@@ -301,6 +337,10 @@ def main() -> None:
         source_invoice_explorer = item_explorer.source_invoice_explorer
         if type(source_invoice_explorer) is SourceInvoiceExplorer:
             handler_kwargs["source_invoice_explorer"] = source_invoice_explorer
+        if args.legacy_invoice_snapshot is not None:
+            # Verified legacy-invoice mode must never force the shared staff picker to
+            # migrate/seed Core SQLite; mutation authority still requires it separately.
+            handler_kwargs["identity_staff_provider"] = ActiveStaffProvider(CURRENT_IDENTITY_STAFF)
         server = ThreadingHTTPServer((args.host, args.port), make_handler(
             item_explorer, manifest, customer_explorer, customer_price_module, order_explorer, awb_explorer,
             invoice_source=invoice_source, invoice_draft_service=invoice_draft_service,

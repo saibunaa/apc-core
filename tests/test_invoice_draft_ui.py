@@ -54,6 +54,8 @@ class TestInvoiceDraftUi(unittest.TestCase):
         self.assertIn("start-invoice-draft", script)
         self.assertIn("disabled", script)
         self.assertIn("sessionStorage.setItem('apc-core-invoice-handoff',openedOrderId)", script)
+        self.assertIn("location.assign('../drafts/')", script)
+        self.assertNotIn("location.assign('../invoices/')", script)
         import apc_core.item_explorer as module
         self.assertIn("start-invoice-draft", module._order_explorer_html(invoice_available=True))
         self.assertIn("apc-core-opened-order", module._order_explorer_html(invoice_available=True))

@@ -14,6 +14,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from apc_core.awb_explorer import html as awb_explorer_html
+from apc_core.active_staff_provider import ActiveStaffProvider
+from apc_core.core_staff_registry import CURRENT_IDENTITY_STAFF, CoreStaffRegistry
 from apc_core.invoice_draft_builder import build_invoice_draft
 from apc_core.invoice_draft_previews import InvoiceDraftPreviewRegistry
 from apc_core.invoice_draft_ui import invoice_draft_html
@@ -22,6 +24,7 @@ from apc_core.order_invoice_ui import order_invoice_html as _order_invoice_html
 from apc_core.order_invoice_workspace import (
     map_browse_page,
     map_core_draft_browse,
+    map_source_invoice,
     map_source_invoice_browse,
     map_source_order,
     map_source_order_browse,
@@ -136,8 +139,7 @@ class CoreStore:
         self.connection.executemany(
             "INSERT INTO core_users (username, role, active) VALUES (?, ?, 1) "
             "ON CONFLICT(username) DO UPDATE SET role = excluded.role, active = 1",
-            (("YIM", "Editor"), ("WAT", "Editor"), ("BON", "Editor"), ("YA", "Editor"),
-             ("BIAS", "Admin"), ("DERRICK", "Admin")),
+            CURRENT_IDENTITY_STAFF,
         )
         self.connection.execute(
             "CREATE TABLE IF NOT EXISTS activity (id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, "
@@ -168,6 +170,12 @@ class CoreStore:
             f"{fields}, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
         )
         self.connection.commit()
+        registry = CoreStaffRegistry(self.path)
+        try:
+            registry.migrate()
+            registry.seed_current_identity_staff_if_empty()
+        finally:
+            registry.close()
 
     def active_staff(self) -> list[tuple[str, str]]:
         return self.connection.execute(
@@ -778,7 +786,7 @@ def _menu_html_body(*, customer_available: bool = True, customer_prices_availabl
         1,
     )
     if invoice_available:
-        body = body.replace('<section class="grid" aria-label="APC Core modules">', '<section class="grid" aria-label="APC Core modules"><a class="card mint" href="invoices/"><div><span class="label">Draft only</span><h2>Invoice Draft</h2><p>Start from an explicitly opened order and review before saving.</p></div><span class="open">Open Invoice Draft →</span></a>', 1)
+        body = body.replace('<section class="grid" aria-label="APC Core modules">', '<section class="grid" aria-label="APC Core modules"><a class="card mint" href="drafts/"><div><span class="label">Draft only</span><h2>Invoice Draft</h2><p>Start from an explicitly opened order and review before saving.</p></div><span class="open">Open Invoice Draft →</span></a>', 1)
     if not customer_available:
         body = body.replace('<a class="card pink" href="customers/"><div><h2>Customers</h2><p>Search and inspect Core-owned customer records.</p></div><span class="open">Open Customer Explorer →</span></a>', '', 1)
     if not customer_prices_available:
@@ -883,10 +891,22 @@ def _order_explorer_html(*, invoice_available: bool = False) -> str:
     return html.replace("<body>", "<body>" + (invoice_draft_handoff_html() if invoice_available else ""), 1)
 
 
-def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None, customer_price_module=None, order_explorer=None, awb_explorer=None, *, source_invoice_explorer=None, invoice_source=None, invoice_draft_service=None, invoice_html: str | None = None, accepted_snapshot_sha256: str | None = None, customer_lan_ingress: bool = False, allowed_mutation_origins: frozenset[str] | None = None, recovery_authorizer=None, recovery_service=None, recovery_maintenance=None):
+def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None, customer_price_module=None, order_explorer=None, awb_explorer=None, *, source_invoice_explorer=None, invoice_source=None, invoice_draft_service=None, invoice_html: str | None = None, accepted_snapshot_sha256: str | None = None, customer_lan_ingress: bool = False, allowed_mutation_origins: frozenset[str] | None = None, recovery_authorizer=None, recovery_service=None, recovery_maintenance=None, identity_staff_provider: ActiveStaffProvider | None = None):
     # A request holds this for its full lifetime. Recovery therefore cannot close/swap
     # Core SQLite while an ordinary request is reading or writing it.
     request_gate = threading.RLock()
+    if identity_staff_provider is not None and type(identity_staff_provider) is not ActiveStaffProvider:
+        raise ValueError("identity staff provider is invalid")
+
+    def _identity_staff_records() -> list[tuple[str, str]]:
+        if identity_staff_provider is not None:
+            return [(record.name, record.role) for record in identity_staff_provider.active_staff()]
+        registry = CoreStaffRegistry(explorer._local_store().path)
+        try:
+            return [(record.name, record.role) for record in registry.active_staff_provider().active_staff()]
+        finally:
+            registry.close()
+
     invoice_available = (
         invoice_source is not None
         and invoice_draft_service is not None
@@ -913,6 +933,9 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
     def _canonical_program_path(path: str) -> str:
         """Accept the canonical /program/ mount while keeping proxy-stripped routes compatible."""
         return path.removeprefix("/program") if path.startswith("/program/") else path
+
+    def _retired_drafts_path(path: str) -> bool:
+        return path == "/invoices" or path.startswith("/invoices/")
 
     class Handler(BaseHTTPRequestHandler):
         def handle_one_request(self) -> None:
@@ -957,6 +980,9 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                 self.end_headers()
                 return
             parsed = parsed._replace(path=_canonical_program_path(parsed.path))
+            if _retired_drafts_path(parsed.path):
+                self._send_json(HTTPStatus.GONE, {"error": "invoice draft routes moved to /drafts/"})
+                return
             if parsed.path == "/admin/recovery/":
                 if recovery_authorizer is None:
                     self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -991,7 +1017,7 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
             if customer_explorer is not None and customer_read_path and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
                 self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer access is loopback-only unless customer LAN ingress is enabled"})
                 return
-            if (parsed.path in {"/order-invoice/", "/order-invoice/api/browse"} or parsed.path.startswith("/order-invoice/api/source-orders/")) and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
+            if (parsed.path in {"/order-invoice/", "/order-invoice/api/browse"} or parsed.path.startswith("/order-invoice/api/source-orders/") or parsed.path.startswith("/order-invoice/api/source-invoices/")) and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
                 self._send_json(HTTPStatus.FORBIDDEN, {"error": "customer access is loopback-only unless customer LAN ingress is enabled"})
                 return
             if parsed.path == "/":
@@ -1066,6 +1092,55 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                             "customer_id": dto.customer_id, "customer_name": dto.customer_name,
                             "lines": lines, "total": dto.line_total, "limit": dto.line_limit,
                             "offset": dto.line_offset, "has_more": dto.has_more, "next_offset": dto.next_offset,
+                        })
+                return
+            if source_invoice_explorer is not None and parsed.path.startswith("/order-invoice/api/source-invoices/"):
+                try:
+                    query = parse_qs(parsed.query, keep_blank_values=True)
+                    if set(query) != {"limit", "offset"}:
+                        raise ValueError
+                    limits, offsets = query.get("limit", []), query.get("offset", [])
+                    if len(limits) != 1 or len(offsets) != 1:
+                        raise ValueError
+                    if not re.fullmatch(r"[0-9]+", limits[0]) or not re.fullmatch(r"[0-9]+", offsets[0]):
+                        raise ValueError
+                    limit, offset = int(limits[0]), int(offsets[0])
+                    if not 1 <= limit <= 250 or offset > 9_223_372_036_854_775_807:
+                        raise ValueError
+                    invoice_id = unquote(parsed.path.removeprefix("/order-invoice/api/source-invoices/"))
+                    if not invoice_id:
+                        raise ValueError
+                    page = source_invoice_explorer.open_invoice(invoice_id, limit=limit, offset=offset)
+                    if page is not None:
+                        expected_page_keys = {
+                            "source_sha256", "source_type", "invoice_id", "slash_family", "header", "total",
+                            "limit", "offset", "has_more", "next_offset", "lines",
+                        }
+                        if (
+                            type(page) is not dict or set(page) != expected_page_keys
+                            or page["source_sha256"] != source_invoice_explorer.source_sha256
+                            or page["source_type"] != "source_invoice" or page["invoice_id"] != invoice_id
+                            or page["limit"] != limit or page["offset"] != offset
+                            or set(page["header"]) != {"invoice_date", "customer_id", "customer_name"}
+                            or (page["has_more"] is True and page["next_offset"] != offset + limit)
+                            or (page["has_more"] is False and page["next_offset"] is not None)
+                        ):
+                            raise ValueError
+                        dto = map_source_invoice(page, source_sha256=source_invoice_explorer.source_sha256)
+                except (KeyError, OverflowError, TypeError, ValueError, sqlite3.Error):
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid legacy invoice detail query"})
+                else:
+                    if page is None:
+                        self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+                    else:
+                        header = page["header"]
+                        self._send_json(HTTPStatus.OK, {
+                            "record_type": dto.record_type, "record_id": dto.record_id,
+                            "invoice_id": dto.record_id.removeprefix("source_invoice:"),
+                            "invoice_date": header["invoice_date"], "customer_id": dto.customer_id,
+                            "customer_name": dto.customer_name, "lines": [dict(line) for line in dto.line_page],
+                            "total": dto.line_total, "limit": limit, "offset": offset,
+                            "has_more": page["has_more"], "next_offset": dto.next_offset,
                         })
                 return
             if parsed.path == "/order-invoice/api/browse":
@@ -1211,19 +1286,19 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                 except (ValueError, sqlite3.Error):
                     self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid customer query"})
                 return
-            if invoice_available and (parsed.path == "/invoices" or parsed.path.startswith("/invoices/")) and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
-                self._send_json(HTTPStatus.FORBIDDEN, {"error": "invoice access is loopback-only unless customer LAN ingress is enabled"})
+            if invoice_available and (parsed.path == "/drafts" or parsed.path.startswith("/drafts/")) and not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
+                self._send_json(HTTPStatus.FORBIDDEN, {"error": "draft access is loopback-only unless customer LAN ingress is enabled"})
                 return
-            if invoice_available and parsed.path == "/invoices":
+            if invoice_available and parsed.path == "/drafts":
                 self.send_response(HTTPStatus.PERMANENT_REDIRECT)
-                self.send_header("Location", "invoices/")
+                self.send_header("Location", "drafts/")
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 return
-            if invoice_available and parsed.path == "/invoices/":
+            if invoice_available and parsed.path == "/drafts/":
                 self._send_html(HTTPStatus.OK, _staff_identity_shell(invoice_page))
                 return
-            if invoice_available and parsed.path == "/invoices/api/candidates":
+            if invoice_available and parsed.path == "/drafts/api/candidates":
                 try:
                     query = parse_qs(parsed.query, keep_blank_values=True)
                     customer_ids = query.get("customer_id", [])
@@ -1243,7 +1318,7 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
             if api_path == "/api/staff":
                 self._send_json(
                     HTTPStatus.OK,
-                    {"staff": [{"username": username, "role": role} for username, role in explorer._local_store().active_staff()]},
+                    {"staff": [{"username": username, "role": role} for username, role in _identity_staff_records()]},
                 )
                 return
             if api_path == "/api/snapshot": self._send_json(HTTPStatus.OK, manifest); return
@@ -1278,21 +1353,24 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
 
         def do_POST(self) -> None:
             customer_path = _canonical_program_path(urlparse(self.path).path)
+            if _retired_drafts_path(customer_path):
+                self._send_json(HTTPStatus.GONE, {"error": "invoice draft routes moved to /drafts/"})
+                return
             if customer_path == "/orders" or customer_path.startswith("/orders/"):
                 self._send_json(HTTPStatus.METHOD_NOT_ALLOWED, {"error": "order forms are read-only"})
                 return
             if customer_path == "/shipments" or customer_path.startswith("/shipments/"):
                 self._send_json(HTTPStatus.METHOD_NOT_ALLOWED, {"error": "shipments are read-only"})
                 return
-            if customer_path.startswith("/invoices/"):
+            if customer_path.startswith("/drafts/"):
                 if not invoice_available:
                     self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
                     return
                 if not _customer_client_allowed(self.client_address[0], customer_lan_ingress):
-                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "invoice access is loopback-only unless customer LAN ingress is enabled"})
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "draft access is loopback-only unless customer LAN ingress is enabled"})
                     return
-                if customer_path not in {"/invoices/api/previews", "/invoices/api/drafts"}:
-                    self._send_json(HTTPStatus.METHOD_NOT_ALLOWED, {"error": "invoice mutation is unsupported"})
+                if customer_path not in {"/drafts/api/previews", "/drafts/api/drafts"}:
+                    self._send_json(HTTPStatus.METHOD_NOT_ALLOWED, {"error": "draft mutation is unsupported"})
                     return
                 if not self._require_json_same_origin():
                     return
@@ -1303,7 +1381,7 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                     payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
                     if type(payload) is not dict:
                         raise ValueError
-                    if customer_path == "/invoices/api/previews":
+                    if customer_path == "/drafts/api/previews":
                         if set(payload) != {"selected_order_ids", "decisions"}:
                             raise ValueError
                         selected, decisions = payload["selected_order_ids"], payload["decisions"]
@@ -1528,8 +1606,12 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
             except (UnicodeDecodeError, json.JSONDecodeError, ValueError, sqlite3.Error): self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid item edit"})
             else: self._send_json(HTTPStatus.OK, {"item": item})
         def _invoice_method_not_allowed(self):
-            if _canonical_program_path(urlparse(self.path).path).startswith("/invoices/"):
-                self._send_json(HTTPStatus.METHOD_NOT_ALLOWED, {"error": "invoice mutations require POST"})
+            customer_path = _canonical_program_path(urlparse(self.path).path)
+            if _retired_drafts_path(customer_path):
+                self._send_json(HTTPStatus.GONE, {"error": "invoice draft routes moved to /drafts/"})
+                return True
+            if customer_path.startswith("/drafts/"):
+                self._send_json(HTTPStatus.METHOD_NOT_ALLOWED, {"error": "draft mutations require POST"})
                 return True
             return False
         def do_PUT(self):
