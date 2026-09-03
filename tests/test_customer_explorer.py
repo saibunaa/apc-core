@@ -908,5 +908,47 @@ class TestCustomerExplorerContract(unittest.TestCase):
             self.assertEqual([], explorer.profile("C-001")["order_notes"])
 
 
+    def test_customer_mobile_filter_sheet_reuses_query_control_and_clear_flow(self):
+        from apc_core.item_explorer import _customer_explorer_html
+        html = _customer_explorer_html()
+        self.assertIn('controls=[...document.querySelectorAll("#q,.toolbar input[type=search],.advanced-search")]', html)
+        self.assertIn('const clear=document.querySelector("#clear")', html)
+        self.assertIn('document.querySelector("#search")?.click()', html)
+        self.assertIn('count.textContent=active()+" active"', html)
+        self.assertIn('sheet.querySelector("[data-apc-mobile-filter-back]")', html)
+        self.assertIn('sheet.querySelector("[data-apc-mobile-filter-close]")', html)
+
+    def test_customer_mobile_filter_sheet_has_accessible_apply_that_uses_existing_search_listener(self):
+        from apc_core.item_explorer import _customer_explorer_html
+        html = _customer_explorer_html()
+
+        self.assertIn('data-apc-mobile-filter-apply', html)
+        self.assertIn('Apply search', html)
+        self.assertIn('sheet.querySelector("[data-apc-mobile-filter-apply]").onclick=()=>{', html)
+        self.assertIn('document.querySelector("#search")?.click();updateCount()', html)
+
+    def test_mobile_sticky_shell_reserves_shared_menu_and_user_control_height_without_legacy_sticky_collision(self):
+        from apc_core.item_explorer import _customer_explorer_html
+        html = _customer_explorer_html()
+
+        self.assertIn('@media(max-width:768px){:root{--apc-mobile-shell-offset:64px}', html)
+        self.assertIn('.toolbar{top:var(--apc-mobile-shell-offset)!important', html)
+        self.assertIn('.back{position:static!important', html)
+        self.assertIn('data-apc-mobile-sticky-shell="true"', html)
+
+    def test_customer_mobile_repairs_disable_colliding_header_and_deduplicate_code_commit(self):
+        from apc_core.item_explorer import _customer_explorer_html
+        html = _customer_explorer_html()
+
+        for marker in (
+            '.queue th,.customer-list-header{position:static!important}',
+            'customerCommitPromise=null;',
+            'if(customerCommitPromise)return customerCommitPromise;',
+            'customerCommitPromise=(async()=>{',
+            '.finally(()=>{customerCommitPromise=null}',
+        ):
+            self.assertIn(marker, html)
+
+
 if __name__ == "__main__":
     unittest.main()
