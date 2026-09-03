@@ -215,8 +215,9 @@ class TestVerifiedStagedLegacyInvoiceRuntime(unittest.TestCase):
         from apc_core.order_invoice_ui import order_invoice_html
 
         html = order_invoice_html()
-        self.assertIn("Legacy Invoices · Read-only", html)
-        self.assertIn("LEGACY INVOICES · READ-ONLY", html)
+        self.assertIn("Legacy source · Read only", html)
+        self.assertIn("single_slash:'Real Invoice · Legacy source · Read only'", html)
+        self.assertIn("repeated_slash:'Temporary / Proforma · Legacy source · Read only'", html)
         self.assertNotIn("Print invoice", html)
         self.assertNotIn("Delete invoice", html)
         self.assertNotIn("Save invoice", html)
