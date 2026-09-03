@@ -137,6 +137,64 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
         self.assertEqual(("", "2026-08-25", "2026-08-31", 50, 0), source.last_browse)
         self.assertEqual("ORD/END", payload["results"][0]["order_id"])
 
+    def test_browse_normalizes_legacy_source_dates_only_for_post_read_range_validation(self):
+        cases = (
+            (
+                "source_order",
+                _BrowseOrderSource({"order_id": "ORD/LEGACY", "order_date": "08/29/26 10:00:00", "customer_id": "C/001"}),
+                None,
+                "order_date",
+            ),
+            (
+                "source_invoice",
+                None,
+                _BrowseInvoiceSource({
+                    "source_type": "source_invoice", "invoice_id": "C//LEGACY", "invoice_date": "08/29/26 10:00:00",
+                    "customer_id": "C/001", "customer_name": "Customer One", "slash_family": "repeated_slash",
+                }),
+                "invoice_date",
+            ),
+        )
+        for record_type, order_source, invoice_source, date_field in cases:
+            with self.subTest(record_type=record_type):
+                statuses, payload = self.get(
+                    f"/order-invoice/api/browse?type={record_type}&query="
+                    "&date_from=2026-08-29&date_to=2026-08-29&limit=1&offset=0",
+                    order_source=order_source,
+                    source_invoice_explorer=invoice_source,
+                )
+
+                self.assertEqual([HTTPStatus.OK], statuses)
+                self.assertEqual("08/29/26 10:00:00", payload["results"][0][date_field])
+
+    def test_browse_rejects_invalid_legacy_source_dates_after_read(self):
+        cases = (
+            (
+                "source_order",
+                _BrowseOrderSource({"order_id": "ORD/INVALID", "order_date": "02/30/26 10:00:00", "customer_id": "C/001"}),
+                None,
+            ),
+            (
+                "source_invoice",
+                None,
+                _BrowseInvoiceSource({
+                    "source_type": "source_invoice", "invoice_id": "C//INVALID", "invoice_date": "02/30/26 10:00:00",
+                    "customer_id": "C/001", "customer_name": "Customer One", "slash_family": "repeated_slash",
+                }),
+            ),
+        )
+        for record_type, order_source, invoice_source in cases:
+            with self.subTest(record_type=record_type):
+                statuses, payload = self.get(
+                    f"/order-invoice/api/browse?type={record_type}&query="
+                    "&date_from=2026-08-01&date_to=2026-08-31&limit=1&offset=0",
+                    order_source=order_source,
+                    source_invoice_explorer=invoice_source,
+                )
+
+                self.assertEqual([HTTPStatus.BAD_REQUEST], statuses)
+                self.assertEqual({"error": "invalid browse query"}, payload)
+
     def test_browse_denies_private_lan_client_without_customer_lan_ingress_before_reading(self):
         source = _BrowseOrderSource()
         request, statuses = self.handler(order_source=source)

@@ -30,6 +30,7 @@ from apc_core.order_invoice_workspace import (
     map_source_order,
     map_source_order_browse,
 )
+from apc_core.source_date_normalization import normalize_source_date
 
 
 _PRIVATE_LAN_NETWORKS = (
@@ -1200,7 +1201,8 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                         for row in browse_page.rows:
                             dto = map_source_order_browse(row)
                             fields = dict(dto.fields)
-                            if not (date_from <= fields["order_date"] <= date_to) or not (
+                            normalized_date = normalize_source_date(fields["order_date"])
+                            if normalized_date is None or not (date_from <= normalized_date <= date_to) or not (
                                 fields["order_id"].startswith(search)
                                 or (fields["order_id"].isascii() and search.isascii() and fields["order_id"].lower().startswith(search.lower()))
                             ):
@@ -1218,7 +1220,8 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                         for row in browse_page.rows:
                             dto = map_source_invoice_browse(row)
                             fields = dict(dto.fields)
-                            if not (date_from <= fields["invoice_date"] <= date_to) or not (
+                            normalized_date = normalize_source_date(fields["invoice_date"])
+                            if normalized_date is None or not (date_from <= normalized_date <= date_to) or not (
                                 fields["invoice_id"].startswith(search)
                                 or (fields["invoice_id"].isascii() and search.isascii() and fields["invoice_id"].lower().startswith(search.lower()))
                             ):
