@@ -255,7 +255,7 @@ class TestP5ReceiptViewModels(unittest.TestCase):
 
         self.assertNotIn("reviewed_at", listed)
         html = invoice_list_html((listed,))
-        self.assertIn("Recorded 2026-09-01 08:30", html)
+        self.assertIn("Recorded 01/09/2026 08:30:00", html)
         self.assertNotIn("Last reviewed", html)
         self.assertNotIn("Reviewed", html)
 
