@@ -1,4 +1,5 @@
 import hashlib
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -126,17 +127,39 @@ class TestVerifiedStagedLegacyInvoiceRuntime(unittest.TestCase):
             worker.start()
             try:
                 host, port = http_server.server_address
-                for path in (
-                    "/order-invoice/",
-                    "/api/staff",
-                    "/order-invoice/api/browse?type=source_invoice&query=C%2F%2F&limit=1&offset=0",
-                ):
+                for path in ("/order-invoice/", "/api/staff"):
                     connection = HTTPConnection(host, port, timeout=3)
                     connection.request("GET", path)
                     response = connection.getresponse()
                     response.read()
                     connection.close()
-                    self.assertLess(response.status, 500, path)
+                    self.assertEqual(200, response.status, path)
+
+                browse_path = "/order-invoice/api/browse?type=source_invoice&query=C%2F%2F&limit=1&offset=0"
+                connection = HTTPConnection(host, port, timeout=3)
+                connection.request("GET", browse_path)
+                response = connection.getresponse()
+                self.assertEqual(403, response.status)
+                self.assertEqual({"error": "active staff identity required"}, json.loads(response.read()))
+                connection.close()
+
+                detail_path = "/order-invoice/api/source-invoices/C%2F%2F2026%2F001?limit=1&offset=0"
+                connection = HTTPConnection(host, port, timeout=3)
+                connection.request("GET", detail_path)
+                response = connection.getresponse()
+                self.assertEqual(403, response.status)
+                self.assertEqual({"error": "active staff identity required"}, json.loads(response.read()))
+                connection.close()
+
+                connection = HTTPConnection(host, port, timeout=3)
+                connection.request("GET", browse_path, headers={"X-APC-Core-Staff": "YIM"})
+                response = connection.getresponse()
+                payload = json.loads(response.read())
+                connection.close()
+                self.assertEqual(200, response.status)
+                self.assertEqual("source_invoice", payload["record_type"])
+                self.assertEqual("C//2026/001", payload["results"][0]["source_invoice_number"])
+                self.assertEqual("repeated_slash", payload["results"][0]["slash_family"])
             finally:
                 http_server.shutdown()
                 http_server.server_close()

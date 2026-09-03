@@ -79,6 +79,8 @@ class TestOrderInvoiceWorkspaceUi(unittest.TestCase):
         html = order_invoice_html()
         self.assertIn("single_slash:'Real Invoice · Legacy source · Read only'", html)
         self.assertIn("repeated_slash:'Temporary / Proforma · Legacy source · Read only'", html)
+        self.assertIn("X-APC-Core-Staff", html)
+        self.assertIn("window.apcCoreActiveStaff", html)
         self.assertIn('slash_family', html)
         self.assertNotIn('Legacy Invoices · Read-only', html)
         for forbidden in ('Save invoice', 'Issue invoice', 'Print invoice', 'Export invoice', 'AWB link'):
