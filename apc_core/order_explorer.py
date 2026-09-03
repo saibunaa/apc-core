@@ -11,6 +11,7 @@ import stat
 import threading
 from pathlib import Path
 
+from apc_core.source_date_normalization import normalized_source_date_sql
 
 _REQUIRED_COLUMNS = {
     "MainDB__ORDER": ("Order No", "Order Date", "Cust ID"),
@@ -43,24 +44,6 @@ def _line_sort_key(line_no: str) -> tuple[int, int | str]:
         return (0, int(line_no))
     except ValueError:
         return (1, line_no)
-
-
-def _normalized_source_date_sql(column: str) -> str:
-    """Return a fail-closed ISO date expression for an approved source column."""
-    legacy_timestamp = (
-        f"printf('20%s-%s-%s %s', substr({column}, 7, 2), substr({column}, 1, 2), "
-        f"substr({column}, 4, 2), substr({column}, 10, 8))"
-    )
-    return (
-        "CASE "
-        f"WHEN typeof({column}) = 'text' AND length({column}) = 10 "
-        f"AND {column} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' "
-        f"AND strftime('%Y-%m-%d', julianday({column})) = {column} THEN {column} "
-        f"WHEN typeof({column}) = 'text' AND length({column}) = 17 "
-        f"AND {column} GLOB '[0-9][0-9]/[0-9][0-9]/[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]' "
-        f"AND strftime('%Y-%m-%d %H:%M:%S', julianday({legacy_timestamp})) = {legacy_timestamp} "
-        f"THEN substr({legacy_timestamp}, 1, 10) ELSE NULL END"
-    )
 
 
 class OrderExplorer:
@@ -194,7 +177,7 @@ class OrderExplorer:
             raise ValueError("invalid order browse query")
         clauses: list[str] = []
         parameters: list[str] = []
-        normalized_date = _normalized_source_date_sql('o."Order Date"')
+        normalized_date = normalized_source_date_sql('o."Order Date"')
         if query:
             clauses.append('o."Order No" LIKE ? ESCAPE \'\\\'')
             parameters.append(query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")

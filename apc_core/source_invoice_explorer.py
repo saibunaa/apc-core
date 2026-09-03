@@ -7,6 +7,7 @@ import stat
 import threading
 from pathlib import Path
 
+from apc_core.source_date_normalization import normalized_source_date_sql
 
 _REQUIRED_COLUMNS = {
     "MainDB__INVOICE": (
@@ -44,24 +45,6 @@ def _slash_family(invoice_id: str) -> str:
 
 def _escape_prefix(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-
-
-def _normalized_source_date_sql(column: str) -> str:
-    """Return a fail-closed ISO date expression for an approved source column."""
-    legacy_timestamp = (
-        f"printf('20%s-%s-%s %s', substr({column}, 7, 2), substr({column}, 1, 2), "
-        f"substr({column}, 4, 2), substr({column}, 10, 8))"
-    )
-    return (
-        "CASE "
-        f"WHEN typeof({column}) = 'text' AND length({column}) = 10 "
-        f"AND {column} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' "
-        f"AND strftime('%Y-%m-%d', julianday({column})) = {column} THEN {column} "
-        f"WHEN typeof({column}) = 'text' AND length({column}) = 17 "
-        f"AND {column} GLOB '[0-9][0-9]/[0-9][0-9]/[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]' "
-        f"AND strftime('%Y-%m-%d %H:%M:%S', julianday({legacy_timestamp})) = {legacy_timestamp} "
-        f"THEN substr({legacy_timestamp}, 1, 10) ELSE NULL END"
-    )
 
 
 class SourceInvoiceExplorer:
@@ -148,7 +131,7 @@ class SourceInvoiceExplorer:
         source = ' FROM "MainDB__INVOICE" AS i LEFT JOIN "MainDB__CUST" AS c ON c."Cust ID" = i."Cust ID"'
         clauses: list[str] = []
         parameters: list[str] = []
-        normalized_date = _normalized_source_date_sql('i."Date"')
+        normalized_date = normalized_source_date_sql('i."Date"')
         if invoice_id:
             clauses.append('i."Inv No" = ?')
             parameters.append(invoice_id)
