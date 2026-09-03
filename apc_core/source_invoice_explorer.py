@@ -120,25 +120,34 @@ class SourceInvoiceExplorer:
             self._connection.close()
 
     def search_invoices(
-        self, invoice_id: object = "", *, prefix: object = "", limit: object = 50, offset: object = 0
+        self, invoice_id: object = "", *, prefix: object = "", date_from: object = "", date_to: object = "", limit: object = 50, offset: object = 0
     ) -> dict[str, object]:
         page_limit, page_offset = self._page(limit, offset)
-        if type(invoice_id) is not str or type(prefix) is not str:
+        if any(type(value) is not str for value in (invoice_id, prefix, date_from, date_to)) or (date_from and date_to and date_from > date_to):
             raise ValueError("invalid invoice filter")
         if invoice_id and prefix:
             raise ValueError("invoice filters are mutually exclusive")
         source = ' FROM "MainDB__INVOICE" AS i LEFT JOIN "MainDB__CUST" AS c ON c."Cust ID" = i."Cust ID"'
+        clauses: list[str] = []
+        parameters: list[str] = []
         if invoice_id:
-            where, parameters = ' WHERE i."Inv No" = ?', [invoice_id]
+            clauses.append('i."Inv No" = ?')
+            parameters.append(invoice_id)
         elif prefix:
-            where, parameters = ' WHERE i."Inv No" LIKE ? ESCAPE \'\\\'', [_escape_prefix(prefix)]
-        else:
-            where, parameters = "", []
+            clauses.append('i."Inv No" LIKE ? ESCAPE \'\\\'')
+            parameters.append(_escape_prefix(prefix))
+        if date_from:
+            clauses.append('i."Date" >= ?')
+            parameters.append(date_from)
+        if date_to:
+            clauses.append('i."Date" <= ?')
+            parameters.append(date_to)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with self._lock:
             total = int(self._connection.execute("SELECT COUNT(*)" + source + where, parameters).fetchone()[0])
             rows = self._connection.execute(
                 'SELECT i."Inv No", i."Date", i."Cust ID", c."Name"' + source + where
-                + ' ORDER BY i."Date", i."Inv No" LIMIT ? OFFSET ?',
+                + ' ORDER BY i."Date" DESC, i."Inv No" LIMIT ? OFFSET ?',
                 [*parameters, page_limit, page_offset],
             ).fetchall()
         invoices = [

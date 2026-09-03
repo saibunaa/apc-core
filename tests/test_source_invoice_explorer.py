@@ -124,9 +124,25 @@ class TestSourceInvoiceExplorerContract(unittest.TestCase):
             self.assertEqual(1, prefix["offset"])
             self.assertTrue(prefix["has_more"] is False)
             self.assertIsNone(prefix["next_offset"])
-            self.assertEqual(["C//2026/002"], [row["invoice_id"] for row in prefix["invoices"]])
+            self.assertEqual(["C//2026/001"], [row["invoice_id"] for row in prefix["invoices"]])
             self.assertEqual([], explorer.search_invoices(prefix="C%", limit=1)["invoices"])
             explorer.close()
+
+    def test_search_can_use_an_inclusive_seven_calendar_day_window_newest_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self.make_snapshot(Path(tmp))
+            connection = sqlite3.connect(source)
+            for invoice_id, invoice_date in (("C/OUTSIDE", "2026-08-24"), ("C/START", "2026-08-25"), ("C/MIDDLE", "2026-08-28"), ("C/END", "2026-08-31"), ("C/FUTURE", "2026-09-01")):
+                connection.execute('INSERT INTO "MainDB__INVOICE" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (invoice_id, "C/001", invoice_date, "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""))
+            connection.commit(); connection.close()
+            explorer = self.explorer_class()(source)
+            try:
+                page = explorer.search_invoices(prefix="C/", date_from="2026-08-25", date_to="2026-08-31", limit=50)
+            finally:
+                explorer.close()
+
+        self.assertEqual(["C/2026/003", "C/END", "C//2026/002", "C//2026/001", "C/MIDDLE", "C/START"], [row["invoice_id"] for row in page["invoices"]])
+        self.assertTrue(all("2026-08-25" <= row["invoice_date"] <= "2026-08-31" for row in page["invoices"]))
 
     def test_open_invoice_is_exact_preserves_slash_heavy_id_and_paginates_numeric_lines_without_inference_fields(self):
         with tempfile.TemporaryDirectory() as tmp:

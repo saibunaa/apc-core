@@ -30,12 +30,12 @@ class _BrowseOrderSource:
             "total": 1661, "limit": limit, "offset": offset, "has_more": True, "next_offset": 2,
         }
 
-    def browse_orders(self, query, *, limit, offset):
+    def browse_orders(self, query, *, date_from, date_to, limit, offset):
         self.calls += 1
+        self.last_browse = (query, date_from, date_to, limit, offset)
         if self.page is not None:
             return self.page
-        assert (query, limit, offset) == ("ORD//", 1, 0)
-        return {"total": 1, "limit": 1, "offset": 0, "has_more": False, "next_offset": None, "orders": [self.row]}
+        return {"total": 1, "limit": limit, "offset": offset, "has_more": False, "next_offset": None, "orders": [self.row]}
 
 
 class _BrowseInvoiceSource:
@@ -49,13 +49,13 @@ class _BrowseInvoiceSource:
         }
         self.page = page
 
-    def search_invoices(self, *, prefix, limit, offset):
+    def search_invoices(self, *, prefix, date_from, date_to, limit, offset):
         self.calls += 1
+        self.last_browse = (prefix, date_from, date_to, limit, offset)
         if self.page is not None:
             return self.page
-        assert (prefix, limit, offset) == ("C//", 1, 0)
         return {
-            "total": 1, "limit": 1, "offset": 0, "has_more": False, "next_offset": None,
+            "total": 1, "limit": limit, "offset": offset, "has_more": False, "next_offset": None,
             "invoices": [self.row],
         }
 
@@ -126,6 +126,16 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
         self.assertIn("Legacy source · Read only", html)
         self.assertNotIn("Core Drafts", html)
         self.assertNotIn("local draft review", html)
+
+    def test_default_source_browse_uses_recent_inclusive_calendar_window_without_search(self):
+        source = _BrowseOrderSource({"order_id": "ORD/END", "order_date": "2026-08-31", "customer_id": "C/001"})
+        with patch("apc_core.item_explorer._recent_calendar_window", return_value=("2026-08-25", "2026-08-31")):
+            statuses, payload = self.get("/order-invoice/api/browse?type=source_order&query=&limit=50&offset=0", order_source=source)
+
+        self.assertEqual([HTTPStatus.OK], statuses)
+        self.assertEqual(1, source.calls)
+        self.assertEqual(("", "2026-08-25", "2026-08-31", 50, 0), source.last_browse)
+        self.assertEqual("ORD/END", payload["results"][0]["order_id"])
 
     def test_browse_denies_private_lan_client_without_customer_lan_ingress_before_reading(self):
         source = _BrowseOrderSource()
@@ -482,12 +492,12 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
         self.assertNotIn("sha256", repr(payload).lower())
         self.assertNotIn("provenance", repr(payload).lower())
 
-    def test_missing_invalid_or_repeated_type_is_a_safe_client_error_without_search(self):
+    def test_missing_invalid_or_repeated_type_is_a_safe_client_error(self):
         for path in (
             "/order-invoice/api/browse?query=ORD//&limit=1&offset=0",
             "/order-invoice/api/browse?type=unknown&query=ORD//&limit=1&offset=0",
             "/order-invoice/api/browse?type=source_order&type=source_invoice&query=ORD//&limit=1&offset=0",
-            "/order-invoice/api/browse?type=source_order&query=&limit=1&offset=0",
+
         ):
             source = _BrowseOrderSource()
             with self.subTest(path=path):

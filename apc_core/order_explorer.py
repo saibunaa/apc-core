@@ -169,21 +169,31 @@ class OrderExplorer:
             "orders": orders,
         }
 
-    def browse_orders(self, query: object, *, limit: object = 50, offset: object = 0) -> dict[str, object]:
-        """Return a prefix-bounded source-order list without joining another source set."""
+    def browse_orders(self, query: object = "", *, date_from: object = "", date_to: object = "", limit: object = 50, offset: object = 0) -> dict[str, object]:
+        """Return a date-bounded source-order list, optionally narrowed by ID prefix."""
         page_limit, page_offset = self._page(limit, offset)
-        if type(query) is not str or not query:
+        if any(type(value) is not str for value in (query, date_from, date_to)) or (date_from and date_to and date_from > date_to):
             raise ValueError("invalid order browse query")
-        prefix = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        where = ' WHERE o."Order No" LIKE ? ESCAPE \'\\\''
+        clauses: list[str] = []
+        parameters: list[str] = []
+        if query:
+            clauses.append('o."Order No" LIKE ? ESCAPE \'\\\'')
+            parameters.append(query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
+        if date_from:
+            clauses.append('o."Order Date" >= ?')
+            parameters.append(date_from)
+        if date_to:
+            clauses.append('o."Order Date" <= ?')
+            parameters.append(date_to)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with self._lock:
             total = int(self._connection.execute(
-                'SELECT COUNT(*) FROM "MainDB__ORDER" AS o' + where, (prefix,)
+                'SELECT COUNT(*) FROM "MainDB__ORDER" AS o' + where, parameters
             ).fetchone()[0])
             rows = self._connection.execute(
                 'SELECT o."Order No", o."Order Date", o."Cust ID" FROM "MainDB__ORDER" AS o' + where
                 + ' ORDER BY o."Order Date" DESC, o."Order No" LIMIT ? OFFSET ?',
-                (prefix, page_limit, page_offset),
+                [*parameters, page_limit, page_offset],
             ).fetchall()
         next_offset = page_offset + page_limit
         return {
