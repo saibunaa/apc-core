@@ -123,7 +123,7 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
         self.assertEqual([HTTPStatus.OK], statuses)
         html = request.wfile.getvalue().decode("utf-8")
         self.assertIn("Source Orders", html)
-        self.assertIn("Legacy Invoices · Read-only", html)
+        self.assertIn("Legacy source · Read only", html)
         self.assertNotIn("Core Drafts", html)
         self.assertNotIn("local draft review", html)
 

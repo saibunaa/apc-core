@@ -19,9 +19,10 @@ class TestOrderInvoiceWorkspaceUi(unittest.TestCase):
             'role="dialog"',
             'aria-modal="true"',
             'Source Orders',
-            'Legacy Invoices · Read-only',
+            'Legacy source · Read only',
             'SOURCE ORDER · READ-ONLY',
-            'LEGACY INVOICES · READ-ONLY',
+            "single_slash:'Real Invoice · Legacy source · Read only'",
+            "repeated_slash:'Temporary / Proforma · Legacy source · Read only'",
             'api/browse?type=',
             'textContent=',
             'replaceChildren()',
@@ -71,6 +72,17 @@ class TestOrderInvoiceWorkspaceUi(unittest.TestCase):
         self.assertNotIn("method:'PUT'", html)
         self.assertNotIn("method:'PATCH'", html)
         self.assertNotIn("method:'DELETE'", html)
+
+    def test_source_invoice_family_labels_are_staff_identity_gated_display_only_copy(self):
+        from apc_core.order_invoice_ui import order_invoice_html
+
+        html = order_invoice_html()
+        self.assertIn("single_slash:'Real Invoice · Legacy source · Read only'", html)
+        self.assertIn("repeated_slash:'Temporary / Proforma · Legacy source · Read only'", html)
+        self.assertIn('slash_family', html)
+        self.assertNotIn('Legacy Invoices · Read-only', html)
+        for forbidden in ('Save invoice', 'Issue invoice', 'Print invoice', 'Export invoice', 'AWB link'):
+            self.assertNotIn(forbidden, html)
 
     def test_default_workspace_hides_core_drafts_until_explicitly_enabled(self):
         from apc_core.order_invoice_ui import order_invoice_html
