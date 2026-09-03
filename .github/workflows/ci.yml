@@ -46,6 +46,8 @@ jobs:
           export APC_CORE_CONTAINER_NAME=apc-core-ci-candidate
           export APC_CORE_ACCEPTED_STATE_DIR=/tmp/ci-accepted-state
           export APC_CORE_DATA_DIR=/tmp/ci-core-data
+          export APC_CORE_LEGACY_INVOICE_SNAPSHOT=/tmp/ci-legacy-invoices.sqlite
+          export APC_CORE_LEGACY_INVOICE_SHA256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
           export APC_CORE_ALLOWED_MUTATION_ORIGINS=https://ci.invalid
           export APC_CORE_DOCKER_NETWORK=ci-mini-private
           export APC_CORE_CANDIDATE_RESTART_POLICY=no
@@ -54,6 +56,8 @@ jobs:
             APC_CORE_CONTAINER_NAME
             APC_CORE_ACCEPTED_STATE_DIR
             APC_CORE_DATA_DIR
+            APC_CORE_LEGACY_INVOICE_SNAPSHOT
+            APC_CORE_LEGACY_INVOICE_SHA256
             APC_CORE_ALLOWED_MUTATION_ORIGINS
           )
           for required in "${required_vars[@]}"; do
@@ -88,6 +92,17 @@ jobs:
               service.get("environment", {}).get("APC_CORE_ALLOWED_MUTATION_ORIGINS") == "https://ci.invalid",
               "Mini service must receive the CI dummy mutation origin",
           )
+          require(
+              service.get("environment", {}).get("APC_CORE_LEGACY_INVOICE_SNAPSHOT") == "/legacy-invoices",
+              "Mini service must receive the fixed in-container legacy invoice path",
+          )
+          require(
+              service.get("environment", {}).get("APC_CORE_LEGACY_INVOICE_SHA256") == "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+              "Mini service must receive the required legacy invoice hash",
+          )
+          command = " ".join(service.get("command", []))
+          require("--legacy-invoice-snapshot" in command, "Mini service command must pass the legacy invoice snapshot")
+          require("--legacy-invoice-sha256" in command, "Mini service command must pass the legacy invoice hash")
 
           networks = service.get("networks", {})
           require(set(networks) == {"mini-private"}, "Mini service must use only the expected private network")
@@ -96,7 +111,7 @@ jobs:
           require(network.get("name") == "ci-mini-private", "Mini network must resolve to the CI dummy network")
 
           volumes = service.get("volumes", [])
-          require(len(volumes) == 2, "Mini service must have exactly two bind mounts")
+          require(len(volumes) == 3, "Mini service must have exactly three bind mounts")
 
           def require_bind(target, source, read_only):
               matches = [volume for volume in volumes if volume.get("target") == target]
@@ -108,4 +123,5 @@ jobs:
 
           require_bind("/state", "/tmp/ci-accepted-state", True)
           require_bind("/core-data", "/tmp/ci-core-data", False)
+          require_bind("/legacy-invoices", "/tmp/ci-legacy-invoices.sqlite", True)
           '

@@ -20,10 +20,22 @@ services:
         target: /core-data
         bind:
           create_host_path: false
+      - type: bind
+        source: "${APC_CORE_LEGACY_INVOICE_SNAPSHOT:?set APC_CORE_LEGACY_INVOICE_SNAPSHOT}"
+        target: /legacy-invoices
+        read_only: true
+        bind:
+          create_host_path: false
     environment:
       APC_CORE_ARTIFACT_ROOT: /state
       APC_CORE_DATA_DIR: /core-data
+      APC_CORE_LEGACY_INVOICE_SNAPSHOT: /legacy-invoices
+      APC_CORE_LEGACY_INVOICE_SHA256: "${APC_CORE_LEGACY_INVOICE_SHA256:?set APC_CORE_LEGACY_INVOICE_SHA256}"
       APC_CORE_ALLOWED_MUTATION_ORIGINS: "${APC_CORE_ALLOWED_MUTATION_ORIGINS:?set APC_CORE_ALLOWED_MUTATION_ORIGINS}"
+    command:
+      - /bin/sh
+      - -ec
+      - 'exec python3 -m apc_core.server --host 0.0.0.0 --container-ingress --port 8769 --manifest /state/accepted_snapshot.json --legacy-invoice-snapshot "$$APC_CORE_LEGACY_INVOICE_SNAPSHOT" --legacy-invoice-sha256 "$$APC_CORE_LEGACY_INVOICE_SHA256"'
     networks:
       - mini-private
     security_opt:
