@@ -925,6 +925,13 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
     invoice_page = invoice_html if type(invoice_html) is str else invoice_draft_html()
     order_invoice_available = order_explorer is not None or source_invoice_explorer is not None or invoice_draft_service is not None
 
+    def _legacy_invoice_staff_allowed(headers) -> bool:
+        """Legacy snapshot reads require a currently supplied staff identity in production mode."""
+        if identity_staff_provider is None:
+            return True
+        actor = headers.get("X-APC-Core-Staff")
+        return type(actor) is str and any(actor == record.name for record in identity_staff_provider.active_staff())
+
     def _invoice_public_proposal(proposal):
         """Keep AWB resolution values server-held while exposing a draft review shape."""
         result = dict(proposal)
@@ -1102,6 +1109,9 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                         })
                 return
             if source_invoice_explorer is not None and parsed.path.startswith("/order-invoice/api/source-invoices/"):
+                if not _legacy_invoice_staff_allowed(self.headers):
+                    self._send_json(HTTPStatus.FORBIDDEN, {"error": "active staff identity required"})
+                    return
                 try:
                     query = parse_qs(parsed.query, keep_blank_values=True)
                     if set(query) != {"limit", "offset"}:
@@ -1181,6 +1191,9 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                                             "order_id": fields["order_id"], "order_date": fields["order_date"],
                                             "customer_id": fields["customer_id"]})
                     elif record_type == "source_invoice" and source_invoice_explorer is not None:
+                        if not _legacy_invoice_staff_allowed(self.headers):
+                            self._send_json(HTTPStatus.FORBIDDEN, {"error": "active staff identity required"})
+                            return
                         page = source_invoice_explorer.search_invoices(prefix=search, limit=limit, offset=offset)
                         browse_page = map_browse_page(page, row_key="invoices", requested_limit=limit, requested_offset=offset)
                         results = []
