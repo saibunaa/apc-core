@@ -149,6 +149,30 @@ class TestOrderExplorerContract(unittest.TestCase):
         self.assertTrue(all("2026-08-25" <= row["order_date"] <= "2026-08-31" for row in page["orders"]))
         self.assertEqual(["ORD/MIDDLE"], [row["order_id"] for row in narrowed["orders"]])
 
+    def test_browse_normalizes_valid_legacy_timestamps_across_year_bounds_but_excludes_malformed_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self.make_snapshot(Path(tmp))
+            connection = sqlite3.connect(source)
+            connection.executemany('INSERT INTO "MainDB__ORDER" VALUES (?, ?, ?)', [
+                ("ORD/BEFORE", "12/28/25 23:59:59", "C/001"),
+                ("ORD/START", "12/29/25 00:00:00", "C/001"),
+                ("ORD/YEAR-END", "12/31/25 12:00:00", "C/001"),
+                ("ORD/NEW-YEAR", "01/01/26 12:00:00", "C/001"),
+                ("ORD/END", "01/04/26 23:59:59", "C/001"),
+                ("ORD/AFTER", "01/05/26 00:00:00", "C/001"),
+                ("ORD/BAD-DAY", "01/02/26 12:00", "C/001"),
+                ("ORD/BAD-TIME", "01/03/26 25:00:00", "C/001"),
+            ])
+            connection.commit(); connection.close()
+            explorer = self.explorer_class()(source)
+            try:
+                page = explorer.browse_orders("ORD/", date_from="2025-12-29", date_to="2026-01-04", limit=50)
+            finally:
+                explorer.close()
+
+        self.assertEqual(["ORD/END", "ORD/NEW-YEAR", "ORD/YEAR-END", "ORD/START"], [row["order_id"] for row in page["orders"]])
+        self.assertEqual("01/04/26 23:59:59", page["orders"][0]["order_date"])
+
     def test_open_order_is_exact_preserves_slashes_duplicate_lines_blank_qty_and_numeric_line_order(self):
         with tempfile.TemporaryDirectory() as tmp:
             explorer = self.explorer_class()(self.make_snapshot(Path(tmp)))

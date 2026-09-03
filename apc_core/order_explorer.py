@@ -45,6 +45,24 @@ def _line_sort_key(line_no: str) -> tuple[int, int | str]:
         return (1, line_no)
 
 
+def _normalized_source_date_sql(column: str) -> str:
+    """Return a fail-closed ISO date expression for an approved source column."""
+    legacy_timestamp = (
+        f"printf('20%s-%s-%s %s', substr({column}, 7, 2), substr({column}, 1, 2), "
+        f"substr({column}, 4, 2), substr({column}, 10, 8))"
+    )
+    return (
+        "CASE "
+        f"WHEN typeof({column}) = 'text' AND length({column}) = 10 "
+        f"AND {column} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' "
+        f"AND strftime('%Y-%m-%d', julianday({column})) = {column} THEN {column} "
+        f"WHEN typeof({column}) = 'text' AND length({column}) = 17 "
+        f"AND {column} GLOB '[0-9][0-9]/[0-9][0-9]/[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]' "
+        f"AND strftime('%Y-%m-%d %H:%M:%S', julianday({legacy_timestamp})) = {legacy_timestamp} "
+        f"THEN substr({legacy_timestamp}, 1, 10) ELSE NULL END"
+    )
+
+
 class OrderExplorer:
     """Bounded, immutable reader for accepted Order data only."""
 
@@ -176,14 +194,15 @@ class OrderExplorer:
             raise ValueError("invalid order browse query")
         clauses: list[str] = []
         parameters: list[str] = []
+        normalized_date = _normalized_source_date_sql('o."Order Date"')
         if query:
             clauses.append('o."Order No" LIKE ? ESCAPE \'\\\'')
             parameters.append(query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
         if date_from:
-            clauses.append('o."Order Date" >= ?')
+            clauses.append(normalized_date + " >= ?")
             parameters.append(date_from)
         if date_to:
-            clauses.append('o."Order Date" <= ?')
+            clauses.append(normalized_date + " <= ?")
             parameters.append(date_to)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with self._lock:
@@ -192,7 +211,7 @@ class OrderExplorer:
             ).fetchone()[0])
             rows = self._connection.execute(
                 'SELECT o."Order No", o."Order Date", o."Cust ID" FROM "MainDB__ORDER" AS o' + where
-                + ' ORDER BY o."Order Date" DESC, o."Order No" LIMIT ? OFFSET ?',
+                + ' ORDER BY ' + normalized_date + ' DESC, o."Order No" LIMIT ? OFFSET ?',
                 [*parameters, page_limit, page_offset],
             ).fetchall()
         next_offset = page_offset + page_limit
