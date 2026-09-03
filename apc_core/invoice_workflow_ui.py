@@ -4,6 +4,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from html import escape
 
+from apc_core.staff_dates import format_staff_timestamp
+
 
 _STATES = {"Temporary", "Real", "Cancelled", "Corrected"}
 
@@ -274,7 +276,7 @@ def _list_rows(records: Sequence[Mapping[str, object]]) -> str:
     for record in records:
         state = _required_text(record, "state")
         reviewed_at = record.get("reviewed_at")
-        reviewed = "" if reviewed_at is None else f'<br><span>Last reviewed {_text(reviewed_at)}</span>'
+        reviewed = "" if reviewed_at is None else f'<br><span>Last reviewed {_text(format_staff_timestamp(reviewed_at))}</span>'
         rows.append(
             f'''<tr class="invoice-list__row">
 <td class="invoice-list__primary">{_text(record["display_reference"])}<br><span>{_text(record["customer_code"])}</span></td>
@@ -283,7 +285,7 @@ def _list_rows(records: Sequence[Mapping[str, object]]) -> str:
 <td>{_text(record["delivery_po_reference"])}</td>
 <td>{_text(record["evidence_reference"])}</td>
 <td><span class="state-badge state-badge--{state.lower()}" aria-label="Invoice state: {_text(state)}">{_text(state)}</span></td>
-<td>Recorded {_text(record["recorded_at"])}{reviewed}</td>
+<td>Recorded {_text(format_staff_timestamp(record["recorded_at"]))}{reviewed}</td>
 </tr>'''
         )
     return "".join(rows) or '<tr><td colspan="7">No matching invoice records.</td></tr>'
