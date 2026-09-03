@@ -111,6 +111,8 @@ class DeploymentContractTests(unittest.TestCase):
             "APC_CORE_CONTAINER_NAME",
             "APC_CORE_ACCEPTED_STATE_DIR",
             "APC_CORE_DATA_DIR",
+            "APC_CORE_LEGACY_INVOICE_SNAPSHOT",
+            "APC_CORE_LEGACY_INVOICE_SHA256",
             "APC_CORE_ALLOWED_MUTATION_ORIGINS",
         ):
             self.assertIn(
@@ -132,6 +134,10 @@ class DeploymentContractTests(unittest.TestCase):
             "type: bind",
             "target: /state",
             "target: /core-data",
+            "target: /legacy-invoices",
+            "read_only: true",
+            "--legacy-invoice-snapshot",
+            "--legacy-invoice-sha256",
             "- no-new-privileges:true",
             "cap_drop:",
             "- ALL",
@@ -144,7 +150,7 @@ class DeploymentContractTests(unittest.TestCase):
     def test_mini_candidate_manifest_source_disables_host_path_creation_for_each_bind(self):
         compose = MINI_COMPOSE_PATH.read_text(encoding="utf-8")
 
-        for target in ("/state", "/core-data"):
+        for target in ("/state", "/core-data", "/legacy-invoices"):
             mount = compose.split(f"target: {target}", 1)[1].split("- type: bind", 1)[0]
             self.assertIn("create_host_path: false", mount)
 
