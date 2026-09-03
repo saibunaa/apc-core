@@ -1,6 +1,7 @@
 import json
 import re
 import sqlite3
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -786,6 +787,79 @@ class ItemExplorerTests(unittest.TestCase):
         self.assertIn("form.querySelector('[data-cancel]').onclick=()=>current&&current.core_created&&!current.item_id?renderEmptyDetail():renderDetail(current)", html)
         self.assertIn("function renderEmptyDetail(){current=null;$('#detail').innerHTML='<p class=\"status\">Select an item to edit it locally.</p>'}", html)
         self.assertIn("fetch(creating?'api/items':'api/items/'+encodeURIComponent(current.item_id)", html)
+
+    def test_mobile_explorer_scripts_are_individually_valid_javascript(self):
+        from apc_core.item_explorer import _customer_explorer_html
+        for html in (__import__("apc_core.item_explorer", fromlist=["_item_explorer_html"])._item_explorer_html(), _customer_explorer_html()):
+            scripts = re.findall(r"<script>(.*?)</script>", html, flags=re.DOTALL)
+            self.assertGreaterEqual(len(scripts), 3)
+            for script in scripts:
+                checked = subprocess.run(["node", "--check", "-"], input=script, text=True, capture_output=True)
+                self.assertEqual(0, checked.returncode, checked.stderr)
+
+    def test_mobile_detail_contract_preserves_row_selection_then_opens_a_closed_inert_drawer(self):
+        from apc_core.item_explorer import _customer_explorer_html
+        for html in (__import__("apc_core.item_explorer", fromlist=["_item_explorer_html"])._item_explorer_html(), _customer_explorer_html()):
+            self.assertIn('hidden inert aria-hidden="true" data-open="false"', html)
+            self.assertIn('document.addEventListener("click",event=>{const row=', html)
+            self.assertNotIn('},true)})();</script>', html)
+            self.assertIn('if(drawer.dataset.open!=="true")return', html)
+            self.assertIn('drawer.hidden=true;drawer.inert=true', html)
+            self.assertIn('drawer.hidden=false;drawer.inert=false', html)
+            self.assertIn('data-apc-mobile-detail-back', html)
+            self.assertIn('data-apc-mobile-detail-close', html)
+            self.assertIn('backdrop.onclick=apcMobileDetailClose', html)
+            self.assertIn('if(startX>24||deltaX<72)return', html)
+            self.assertIn('window.apcMobileFocusTrap(event,drawer)', html)
+            self.assertIn('@media(prefers-reduced-motion:reduce)', html)
+
+    def test_mobile_filter_contract_transfers_existing_controls_and_keeps_desktop_inline_filters(self):
+        from apc_core.item_explorer import _customer_explorer_html
+        for html in (__import__("apc_core.item_explorer", fromlist=["_item_explorer_html"])._item_explorer_html(), _customer_explorer_html()):
+            self.assertIn('trigger.dataset.apcMobileFilterTrigger', html)
+            self.assertIn('data-apc-mobile-filter-controls', html)
+            self.assertIn('function moveControls(open)', html)
+            self.assertIn('controls.forEach(control=>sheetControls.append(control))', html)
+            self.assertIn('controls.forEach((control,index)=>homes[index].after(control))', html)
+            self.assertIn('dispatchEvent(new Event("input",{bubbles:true}))', html)
+            self.assertIn('window.apcMobileDetailClose?.({restoreFocus:false})', html)
+            self.assertIn('window.apcMobileFiltersClose?.({restoreFocus:false})', html)
+            self.assertIn('sheet.hidden=true;sheet.inert=true', html)
+            self.assertIn('sheet.hidden=false;sheet.inert=false', html)
+            self.assertIn('window.apcMobileFocusTrap(event,sheet)', html)
+
+    def test_mobile_sticky_shell_reserves_shared_menu_and_user_control_height_without_legacy_sticky_collision(self):
+        html = __import__("apc_core.item_explorer", fromlist=["_item_explorer_html"])._item_explorer_html()
+
+        self.assertIn('@media(max-width:768px){:root{--apc-mobile-shell-offset:64px}', html)
+        self.assertIn('.toolbar{top:var(--apc-mobile-shell-offset)!important', html)
+        self.assertIn('.back{position:static!important', html)
+        self.assertIn('data-apc-mobile-sticky-shell="true"', html)
+
+    def test_mobile_overlay_repairs_keep_detail_lookup_reversible_and_modal_safe(self):
+        html = __import__("apc_core.item_explorer", fromlist=["_item_explorer_html"])._item_explorer_html()
+
+        for marker in (
+            '.queue thead{position:static}.queue th,.customer-list-header{position:static!important}',
+            'detailHome=document.createComment("apc-mobile-detail-home")',
+            'detail.replaceWith(detailHome);drawerContent.append(detail)',
+            'function restoreDetail(){if(detail?.parentNode===drawerContent)detailHome.replaceWith(detail)}',
+            'media.addEventListener("change",event=>{if(!event.matches){apcMobileDetailClose({restoreFocus:false});restoreDetail()}})',
+            'const tabbables=root=>[...root.querySelectorAll("button,input,select,textarea,[href],[tabindex]")].filter(x=>!x.hidden&&!x.disabled&&x.tabIndex>=0&&x.getClientRects().length)',
+            'window.apcMobileIsolateBackground()', 'window.apcMobileRestoreBackground()',
+            'control.addEventListener("input",updateCount);control.addEventListener("change",updateCount)',
+        ):
+            self.assertIn(marker, html)
+
+    def test_mobile_overlays_isolate_all_body_siblings_and_restore_preexisting_accessibility_state(self):
+        from apc_core.item_explorer import _customer_explorer_html
+        for html in (__import__("apc_core.item_explorer", fromlist=["_item_explorer_html"])._item_explorer_html(), _customer_explorer_html()):
+            self.assertIn('data-apc-mobile-overlay', html)
+            self.assertIn('overlayBackgrounds=()=>[...document.body.querySelectorAll("main,[role=dialog],#identity-confirm")].filter(node=>!node.matches("[data-apc-mobile-overlay]"))', html)
+            self.assertIn('function isolateBackground(){overlayBackgrounds().forEach(node=>{backgroundState.set(node,{inert:node.inert,ariaHidden:node.getAttribute("aria-hidden")});node.inert=true;node.setAttribute("aria-hidden","true")})}', html)
+            self.assertIn('function restoreBackground(){backgroundState.forEach((state,node)=>{node.inert=state.inert;if(state.ariaHidden===null)node.removeAttribute("aria-hidden");else node.setAttribute("aria-hidden",state.ariaHidden)});backgroundState.clear()}', html)
+            self.assertNotIn('background.inert=true', html)
+            self.assertNotIn('background.inert=false', html)
 
 
 if __name__ == "__main__":
