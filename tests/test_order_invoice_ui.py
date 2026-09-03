@@ -73,6 +73,17 @@ class TestOrderInvoiceWorkspaceUi(unittest.TestCase):
         self.assertNotIn("method:'PATCH'", html)
         self.assertNotIn("method:'DELETE'", html)
 
+    def test_opening_the_workspace_browses_the_latest_seven_calendar_days_without_search(self):
+        from apc_core.order_invoice_ui import order_invoice_html
+
+        html = order_invoice_html()
+        self.assertIn('id="order-invoice-date-from"', html)
+        self.assertIn('id="order-invoice-date-to"', html)
+        self.assertIn("function recentCalendarWindow()", html)
+        self.assertIn("browse(0)", html[html.index("function open()"):html.index("function textFor")])
+        self.assertIn("date_from", html)
+        self.assertIn("date_to", html)
+
     def test_source_invoice_family_labels_are_staff_identity_gated_display_only_copy(self):
         from apc_core.order_invoice_ui import order_invoice_html
 

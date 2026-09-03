@@ -6,6 +6,7 @@ import sqlite3
 import stat
 import threading
 import hashlib
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -39,6 +40,12 @@ _PRIVATE_LAN_NETWORKS = (
 
 
 _MAX_INVOICE_PREVIEW_ORDERS = 20
+
+
+def _recent_calendar_window(today: date | None = None) -> tuple[str, str]:
+    """Return the current day and six preceding calendar days, inclusively."""
+    end = today or date.today()
+    return ((end - timedelta(days=6)).isoformat(), end.isoformat())
 
 
 def _customer_client_allowed(client_address: str, customer_lan_ingress: bool) -> bool:
@@ -1163,26 +1170,37 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
             if parsed.path == "/order-invoice/api/browse":
                 try:
                     query = parse_qs(parsed.query, keep_blank_values=True)
-                    if set(query) != {"type", "query", "limit", "offset"}:
+                    if set(query) not in ({"type", "query", "limit", "offset"}, {"type", "query", "date_from", "date_to", "limit", "offset"}):
                         raise ValueError
                     types, searches = query.get("type", []), query.get("query", [])
+                    date_from_values, date_to_values = query.get("date_from", [""]), query.get("date_to", [""])
                     limits, offsets = query.get("limit", []), query.get("offset", [])
-                    if len(types) != 1 or len(searches) != 1 or len(limits) != 1 or len(offsets) != 1 or not searches[0]:
+                    if len(types) != 1 or len(searches) != 1 or len(date_from_values) != 1 or len(date_to_values) != 1 or len(limits) != 1 or len(offsets) != 1:
                         raise ValueError
                     record_type, search = types[0], searches[0]
+                    default_date_from, default_date_to = _recent_calendar_window()
+                    date_from = date_from_values[0] or default_date_from
+                    date_to = date_to_values[0] or default_date_to
+                    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", date_from) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", date_to):
+                        raise ValueError
+                    try:
+                        if date.fromisoformat(date_from) > date.fromisoformat(date_to):
+                            raise ValueError
+                    except ValueError:
+                        raise ValueError
                     if not re.fullmatch(r"[0-9]+", limits[0]) or not re.fullmatch(r"[0-9]+", offsets[0]):
                         raise ValueError
                     limit, offset = int(limits[0]), int(offsets[0])
                     if not 1 <= limit <= 250 or offset > 9_223_372_036_854_775_807:
                         raise ValueError
                     if record_type == "source_order" and order_explorer is not None:
-                        page = order_explorer.browse_orders(search, limit=limit, offset=offset)
+                        page = order_explorer.browse_orders(search, date_from=date_from, date_to=date_to, limit=limit, offset=offset)
                         browse_page = map_browse_page(page, row_key="orders", requested_limit=limit, requested_offset=offset)
                         results = []
                         for row in browse_page.rows:
                             dto = map_source_order_browse(row)
                             fields = dict(dto.fields)
-                            if not (
+                            if not (date_from <= fields["order_date"] <= date_to) or not (
                                 fields["order_id"].startswith(search)
                                 or (fields["order_id"].isascii() and search.isascii() and fields["order_id"].lower().startswith(search.lower()))
                             ):
@@ -1194,13 +1212,13 @@ def make_handler(explorer: ItemExplorer, manifest: dict, customer_explorer=None,
                         if not _legacy_invoice_staff_allowed(self.headers):
                             self._send_json(HTTPStatus.FORBIDDEN, {"error": "active staff identity required"})
                             return
-                        page = source_invoice_explorer.search_invoices(prefix=search, limit=limit, offset=offset)
+                        page = source_invoice_explorer.search_invoices(prefix=search, date_from=date_from, date_to=date_to, limit=limit, offset=offset)
                         browse_page = map_browse_page(page, row_key="invoices", requested_limit=limit, requested_offset=offset)
                         results = []
                         for row in browse_page.rows:
                             dto = map_source_invoice_browse(row)
                             fields = dict(dto.fields)
-                            if not (
+                            if not (date_from <= fields["invoice_date"] <= date_to) or not (
                                 fields["invoice_id"].startswith(search)
                                 or (fields["invoice_id"].isascii() and search.isascii() and fields["invoice_id"].lower().startswith(search.lower()))
                             ):

@@ -158,7 +158,8 @@ class TestVerifiedStagedLegacyInvoiceRuntime(unittest.TestCase):
                 connection.close()
                 self.assertEqual(200, response.status)
                 self.assertEqual("source_invoice", payload["record_type"])
-                self.assertEqual("C//2026/001", payload["results"][0]["source_invoice_number"])
+                self.assertEqual("C//2026/002", payload["results"][0]["source_invoice_number"])
+                # VB6-parity default browse is newest-first within its bounded window.
                 self.assertEqual("repeated_slash", payload["results"][0]["slash_family"])
             finally:
                 http_server.shutdown()

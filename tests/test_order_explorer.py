@@ -127,6 +127,28 @@ class TestOrderExplorerContract(unittest.TestCase):
             self.assertEqual([], explorer.search_orders(customer="<script>", limit=1)["orders"])
             explorer.close()
 
+    def test_browse_can_use_an_inclusive_seven_calendar_day_window_newest_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self.make_snapshot(Path(tmp))
+            connection = sqlite3.connect(source)
+            connection.executemany('INSERT INTO "MainDB__ORDER" VALUES (?, ?, ?)', [
+                ("ORD/OUTSIDE", "2026-08-24", "C/001"), ("ORD/START", "2026-08-25", "C/001"),
+                ("ORD/MIDDLE", "2026-08-28", "C/001"), ("ORD/END", "2026-08-31", "C/001"),
+                ("ORD/FUTURE", "2026-09-01", "C/001"),
+            ])
+            connection.commit(); connection.close()
+            explorer = self.explorer_class()(source)
+            try:
+                page = explorer.browse_orders("", date_from="2026-08-25", date_to="2026-08-31", limit=50)
+                narrowed = explorer.browse_orders("ORD/M", date_from="2026-08-25", date_to="2026-08-31", limit=50)
+            finally:
+                explorer.close()
+
+        self.assertEqual(5, page["total"])
+        self.assertEqual(["ORD/END", "ORD/2026/001-X", "ORD/2026/001", "ORD/MIDDLE", "ORD/START"], [row["order_id"] for row in page["orders"]])
+        self.assertTrue(all("2026-08-25" <= row["order_date"] <= "2026-08-31" for row in page["orders"]))
+        self.assertEqual(["ORD/MIDDLE"], [row["order_id"] for row in narrowed["orders"]])
+
     def test_open_order_is_exact_preserves_slashes_duplicate_lines_blank_qty_and_numeric_line_order(self):
         with tempfile.TemporaryDirectory() as tmp:
             explorer = self.explorer_class()(self.make_snapshot(Path(tmp)))
