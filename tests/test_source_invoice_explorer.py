@@ -144,6 +144,27 @@ class TestSourceInvoiceExplorerContract(unittest.TestCase):
         self.assertEqual(["C/2026/003", "C/END", "C//2026/002", "C//2026/001", "C/MIDDLE", "C/START"], [row["invoice_id"] for row in page["invoices"]])
         self.assertTrue(all("2026-08-25" <= row["invoice_date"] <= "2026-08-31" for row in page["invoices"]))
 
+    def test_search_normalizes_valid_legacy_timestamps_across_year_bounds_but_excludes_malformed_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = self.make_snapshot(Path(tmp))
+            connection = sqlite3.connect(source)
+            for invoice_id, invoice_date in (
+                ("C/BEFORE", "12/28/25 23:59:59"), ("C/START", "12/29/25 00:00:00"),
+                ("C/YEAR-END", "12/31/25 12:00:00"), ("C/NEW-YEAR", "01/01/26 12:00:00"),
+                ("C/END", "01/04/26 23:59:59"), ("C/AFTER", "01/05/26 00:00:00"),
+                ("C/BAD-DAY", "01/02/26 12:00"), ("C/BAD-TIME", "01/03/26 25:00:00"),
+            ):
+                connection.execute('INSERT INTO "MainDB__INVOICE" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (invoice_id, "C/001", invoice_date, "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""))
+            connection.commit(); connection.close()
+            explorer = self.explorer_class()(source)
+            try:
+                page = explorer.search_invoices(prefix="C/", date_from="2025-12-29", date_to="2026-01-04", limit=50)
+            finally:
+                explorer.close()
+
+        self.assertEqual(["C/END", "C/NEW-YEAR", "C/YEAR-END", "C/START"], [row["invoice_id"] for row in page["invoices"]])
+        self.assertEqual("01/04/26 23:59:59", page["invoices"][0]["invoice_date"])
+
     def test_open_invoice_is_exact_preserves_slash_heavy_id_and_paginates_numeric_lines_without_inference_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
             explorer = self.explorer_class()(self.make_snapshot(Path(tmp)))
