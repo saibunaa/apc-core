@@ -163,7 +163,7 @@ class TestOrderInvoiceWorkspaceUi(unittest.TestCase):
             handler_class = make_handler(object(), {})
             self.assertNotIn('/order-invoice/', inspect.getsource(getattr(handler_class, method_name)))
 
-    def test_mobile_header_groups_main_menu_and_active_identity_at_all_mobile_widths(self):
+    def test_mobile_header_leaves_shared_identity_and_main_navigation_in_the_shared_fixed_shell(self):
         from apc_core.order_invoice_ui import order_invoice_html
 
         html = order_invoice_html()
@@ -171,11 +171,12 @@ class TestOrderInvoiceWorkspaceUi(unittest.TestCase):
             'id="order-invoice-mobile-header"',
             'class="order-invoice-mobile-header"',
             'data-apc-mobile-identity-header="true"',
-            "const mobileHeader=document.getElementById('order-invoice-mobile-header'),identityChange=document.getElementById('identity-change-user');if(identityChange)mobileHeader.append(identityChange)",
             '@media(max-width:768px){.shell{padding:16px}.order-invoice-mobile-header{position:sticky;top:0;',
-            '#order-invoice-mobile-header .identity-action,#order-invoice-mobile-header .back{position:static;',
         ):
             self.assertIn(marker, html)
+        self.assertNotIn("identityChange=document.getElementById('identity-change-user')", html)
+        self.assertNotIn('mobileHeader.append(identityChange)', html)
+        self.assertNotIn('#order-invoice-mobile-header .identity-action,#order-invoice-mobile-header .back{position:static;', html)
 
     def test_mobile_header_reserves_space_and_preserves_visible_keyboard_focus(self):
         from apc_core.order_invoice_ui import order_invoice_html

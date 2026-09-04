@@ -122,7 +122,7 @@ class ProgramShellTests(unittest.TestCase):
             self.assertIn('change.hidden=!value', html)
             self.assertIn('function choose(){apply("");picker.hidden=false;content.hidden=true;', html)
             self.assertIn('html.apc-core-known-user #identity-confirm{background:transparent;pointer-events:none}', html)
-            self.assertIn('.identity-action,.back{pointer-events:auto;position:fixed;top:16px;z-index:11;display:inline-flex;align-items:center;', html)
+            self.assertIn('.identity-action,.back,.main-menu-link{pointer-events:auto;position:fixed;top:16px;z-index:11;display:inline-flex;align-items:center;', html)
             self.assertNotIn('html.apc-core-known-user #identity-confirm{display:none}', html)
             self.assertIn('window.dispatchEvent(new CustomEvent("apc-core-identity",{detail:value||""}))', html)
 
@@ -134,17 +134,17 @@ class ProgramShellTests(unittest.TestCase):
             self.assertIn('transparent 30%),#eadbc8', html)
             self.assertIn('.identity-card{width:min(980px,100%);padding:clamp(22px,4vw,46px);border:3px solid #24272b;border-radius:22px;background:#fffdfa', html)
             self.assertIn('.identity-tile:hover{transform:translate(-2px,-2px);box-shadow:8px 8px 0 #24272b;outline:none}', html)
-            self.assertIn('.identity-action:hover,.back:hover{transform:translate(-1px,-1px);box-shadow:0 4px 10px #24272b33}', html)
+            self.assertIn('.identity-action:hover,.back:hover,.main-menu-link:hover{transform:translate(-1px,-1px);box-shadow:0 4px 10px #24272b33}', html)
             self.assertIn('.identity-tile:focus-visible{transform:translate(-2px,-2px);box-shadow:9px 9px 0 #24272b;outline:3px solid #174d3e;outline-offset:3px}', html)
             self.assertIn('colorVisitKey="apc-core-identity-color-visit"', html)
             self.assertIn('if(!Number.isFinite(colorVisit))colorVisit=0', html)
             self.assertIn('tile.classList.add("identity-tone-"+((index+colorVisit)%4+1))', html)
             self.assertIn('.identity-tone-1{background:#f7c948}', html)
             self.assertIn('.identity-tone-4{background:#a9c9f4}', html)
-            self.assertIn('.identity-action,.back{pointer-events:auto;position:fixed;top:16px;z-index:11;display:inline-flex;align-items:center;min-height:42px;border:1px solid var(--line);border-radius:14px;padding:0 14px;background:var(--paper);color:var(--accent);font-weight:700;box-shadow:0 2px 6px #24272b26;', html)
+            self.assertIn('.identity-action,.back,.main-menu-link{pointer-events:auto;position:fixed;top:16px;z-index:11;display:inline-flex;align-items:center;min-height:42px;width:auto!important;border:1px solid var(--line);border-radius:14px;padding:0 14px;background:var(--paper);color:var(--accent);font-weight:700;box-shadow:0 2px 6px #24272b26;', html)
             self.assertIn('.identity-action[hidden]{display:none}', html)
-            self.assertIn('.identity-action{right:16px}', html)
-            self.assertIn('.back{left:16px}', html)
+            self.assertIn('.identity-action{right:16px;max-width:calc(100vw - 32px);width:auto!important}', html)
+            self.assertIn('.back,.main-menu-link{left:16px}', html)
             self.assertIn('.back+h1,.back+.top{margin-top:74px}', html)
 
         for html in (_item_explorer_html(), _customer_explorer_html()):
@@ -153,7 +153,7 @@ class ProgramShellTests(unittest.TestCase):
 
     def test_customer_workspace_keeps_profile_visible_and_does_not_force_page_scroll(self):
         html = _customer_explorer_html()
-        for marker in (".profile{position:sticky", ".back{left:16px}", 'class="back" href="../"', "@media(max-width:760px){.shell{padding:12px}.workspace{grid-template-columns:1fr}.profile{position:static;align-self:auto;border:0;border-top:1px solid var(--line)}", "Main menu"):
+        for marker in (".profile{position:sticky", ".back,.main-menu-link{left:16px}", 'class="back" href="../"', "@media(max-width:760px){.shell{padding:12px}.workspace{grid-template-columns:1fr}.profile{position:static;align-self:auto;border:0;border-top:1px solid var(--line)}", "Main menu"):
             self.assertIn(marker, html)
         self.assertNotIn("scrollIntoView", html)
         self.assertNotIn("window.scrollTo", html)
@@ -372,6 +372,13 @@ class ProgramShellTests(unittest.TestCase):
         self.assertNotRegex(html, r"fetch\([^)]*method\s*:")
         self.assertNotIn('data-preview=', html)
         self.assertNotIn('B/I/M/P/W/U/T', html)
+
+    def test_shared_shell_controls_override_module_wide_button_and_link_layout_rules(self):
+        import apc_core.item_explorer as module
+        html = module._staff_identity_shell("<!doctype html><html><body><main id=\"frmOrderForm\"><a class=\"main-menu-link\" href=\"../\">Main menu</a></main></body></html>")
+        self.assertIn('.identity-action{right:16px;max-width:calc(100vw - 32px);width:auto!important}', html)
+        self.assertIn('.identity-action,.back,.main-menu-link{pointer-events:auto;position:fixed;top:16px;z-index:11;', html)
+        self.assertIn('.main-menu-link{left:16px}', html)
 
     def test_order_forms_keeps_shared_identity_and_main_navigation_reachable_after_scroll(self):
         import apc_core.item_explorer as module
