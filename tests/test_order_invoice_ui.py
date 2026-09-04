@@ -163,6 +163,32 @@ class TestOrderInvoiceWorkspaceUi(unittest.TestCase):
             handler_class = make_handler(object(), {})
             self.assertNotIn('/order-invoice/', inspect.getsource(getattr(handler_class, method_name)))
 
+    def test_mobile_header_groups_main_menu_and_active_identity_at_all_mobile_widths(self):
+        from apc_core.order_invoice_ui import order_invoice_html
+
+        html = order_invoice_html()
+        for marker in (
+            'id="order-invoice-mobile-header"',
+            'class="order-invoice-mobile-header"',
+            'data-apc-mobile-identity-header="true"',
+            "const mobileHeader=document.getElementById('order-invoice-mobile-header'),identityChange=document.getElementById('identity-change-user');if(identityChange)mobileHeader.append(identityChange)",
+            '@media(max-width:768px){.shell{padding:16px}.order-invoice-mobile-header{position:sticky;top:0;',
+            '#order-invoice-mobile-header .identity-action,#order-invoice-mobile-header .back{position:static;',
+        ):
+            self.assertIn(marker, html)
+
+    def test_mobile_header_reserves_space_and_preserves_visible_keyboard_focus(self):
+        from apc_core.order_invoice_ui import order_invoice_html
+
+        html = order_invoice_html()
+        for marker in (
+            '.order-invoice-mobile-header{margin-bottom:12px;',
+            '#order-invoice-workspace .card{scroll-margin-top:76px}',
+            '.order-invoice-mobile-header .back:focus-visible,.order-invoice-mobile-header .identity-action:focus-visible{outline:3px solid var(--accent);',
+            '.modal{position:fixed;inset:0;z-index:20;',
+        ):
+            self.assertIn(marker, html)
+
 
 if __name__ == "__main__":
     unittest.main()
