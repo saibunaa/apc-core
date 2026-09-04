@@ -373,6 +373,17 @@ class ProgramShellTests(unittest.TestCase):
         self.assertNotIn('data-preview=', html)
         self.assertNotIn('B/I/M/P/W/U/T', html)
 
+    def test_order_forms_keeps_shared_identity_and_main_navigation_reachable_after_scroll(self):
+        import apc_core.item_explorer as module
+        html = module._order_explorer_html()
+        self.assertIn('class="main-menu-link" href="../"', html)
+        self.assertIn('.main-menu-link{position:fixed;top:16px;left:16px;', html)
+        self.assertIn('.utility{position:sticky;top:0;z-index:10;padding:16px 0;min-height:74px;background:var(--cream);justify-content:space-between;color:var(--muted);font-size:12px}', html)
+        self.assertIn('.shell{max-width:1500px;margin:auto;padding:86px 28px 28px}', html)
+        self.assertIn('#frmOrderForm button,#frmOrderFormList button{', html)
+        self.assertNotIn('input,select,textarea,button{font:inherit;padding:9px;', html)
+        self.assertIn('.main-menu-link:focus-visible{outline:3px solid var(--accent);outline-offset:3px}', html)
+
     def test_order_forms_customer_template_ui_hydrates_the_typed_code_not_only_loaded_orders(self):
         import apc_core.item_explorer as module
         html = module._order_explorer_html()
