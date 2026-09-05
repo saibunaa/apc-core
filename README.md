@@ -31,6 +31,29 @@ APC_CORE_DATA_DIR=/tmp/apc-core-test-state APC_CORE_RECOVERY_TEST_PIN='<test PIN
 
 Use only non-secret environment provisioning outside the repository. Any use or promotion of this candidate requires a **fresh promotion gate**; do not reuse an earlier approval or infer live readiness from this manifest.
 
+## Canonical deterministic Mini release runner
+
+`tools/apc_mini_release.py` is the only release runner for an APC Core Mini **candidate**. It is deliberately plan-only by default and has separately invoked `preflight`, `build`, `validate`, `promote`, and `rollback` phases. It never performs promotion as part of validation.
+
+Every execution requires operator-provided provenance: an exact GitHub archive SHA-256, release Git SHA, unique UTC candidate timestamp, exact Core SQLite source, accepted-state source, Legacy MDB source, an approved WAL-aware logical-backup executable, Caddy network/upstream name, allowed HTTPS origin, and a semantic browser validation command. It creates a unique owner-only candidate root and project/container name, verifies archive and state-copy manifests byte-for-byte, makes the Core copy exclusively with `sqlite3.Connection.backup()`, requires a sidecar-free hash-pinned Legacy SQLite snapshot, checks the image import as UID 1000, and validates rendered compose hardening/no-host-port conditions before it starts a candidate on the Caddy network.
+
+Example **plan** (no writes, Docker, Caddy, or Mini changes):
+
+```bash
+python3 tools/apc_mini_release.py preflight \
+  --github-archive-sha256 '<exact archive sha256>' \
+  --release-git-sha '<exact 40-char git sha>' \
+  --candidate-timestamp 'YYYYMMDDTHHMMSSZ' \
+  --legacy-mdb '/required/legacy.mdb' \
+  --accepted-state-source '/required/accepted-state' \
+  --core-source-sqlite '/required/core.sqlite' \
+  --allowed-origin 'https://mini.example.invalid' \
+  --caddy-network 'required-caddy-network' \
+  --upstream-name 'required-candidate-upstream'
+```
+
+Add `--execute` only to the specific approved phase. `promote` and `rollback` additionally require `--caddyfile`, `--current-upstream`, and `--replacement-upstream`; they stage and validate an exact **one-upstream** Caddyfile replacement before `caddy reload`. They never restart Caddy or any service. A new human approval is required for each of those explicit cutover commands.
+
 ## Developer-local invoice draft reconciliation
 
 The invoice-draft reconciliation evidence is developer-local and uses only synthetic fixtures:
