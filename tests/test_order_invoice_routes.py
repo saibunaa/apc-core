@@ -214,7 +214,7 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
         source = _BrowseOrderSource()
         request, statuses = self.handler(order_source=source, customer_lan_ingress=True)
         request.client_address = ("192.168.1.42", 1)
-        request.path = "/order-invoice/api/browse?type=source_order&query=ORD//&limit=1&offset=0"
+        request.path = "/order-invoice/api/browse?type=source_order&query=ORD//&date_from=2026-08-01&date_to=2026-08-31&limit=1&offset=0"
 
         request.do_GET()
 
@@ -350,7 +350,7 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
         self.assertEqual(0, source.calls)
 
     def test_browse_source_order_returns_a_closed_type_specific_dto(self):
-        statuses, payload = self.get("/order-invoice/api/browse?type=source_order&query=ORD//&limit=1&offset=0")
+        statuses, payload = self.get("/order-invoice/api/browse?type=source_order&query=ORD//&date_from=2026-08-01&date_to=2026-08-31&limit=1&offset=0")
 
         self.assertEqual([HTTPStatus.OK], statuses)
         self.assertEqual({"record_type", "total", "limit", "offset", "has_more", "next_offset", "results"}, set(payload))
@@ -370,7 +370,7 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
         for record_type, query, order_source, invoice_source, service in cases:
             with self.subTest(record_type=record_type):
                 statuses, payload = self.get(
-                    f"/order-invoice/api/browse?type={record_type}&query={query}&limit=1&offset=0",
+                    f"/order-invoice/api/browse?type={record_type}&query={query}&date_from=2026-08-01&date_to=2026-08-31&limit=1&offset=0",
                     order_source=order_source, source_invoice_explorer=invoice_source, invoice_draft_service=service,
                 )
                 self.assertEqual([HTTPStatus.OK], statuses)
@@ -420,7 +420,7 @@ class TestOrderInvoiceBrowseRoute(unittest.TestCase):
 
     def test_browse_source_invoice_preserves_exact_slashes_without_order_provenance(self):
         statuses, payload = self.get(
-            "/order-invoice/api/browse?type=source_invoice&query=C//&limit=1&offset=0",
+            "/order-invoice/api/browse?type=source_invoice&query=C//&date_from=2026-08-01&date_to=2026-08-31&limit=1&offset=0",
             source_invoice_explorer=_BrowseInvoiceSource(),
         )
 
