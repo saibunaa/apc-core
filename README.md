@@ -35,7 +35,7 @@ Use only non-secret environment provisioning outside the repository. Any use or 
 
 `tools/apc_mini_release.py` is the only release runner for an APC Core Mini **candidate**. It is deliberately plan-only by default and has separately invoked `preflight`, `build`, `validate`, `promote`, and `rollback` phases. It never performs promotion as part of validation.
 
-Every execution requires operator-provided provenance: an exact GitHub archive SHA-256, release Git SHA, unique UTC candidate timestamp, exact Core SQLite source, accepted-state source, Legacy MDB source, an approved WAL-aware logical-backup executable, Caddy network/upstream name, allowed HTTPS origin, and a semantic browser validation command. It creates a unique owner-only candidate root and project/container name, verifies archive and state-copy manifests byte-for-byte, makes the Core copy exclusively with `sqlite3.Connection.backup()`, requires a sidecar-free hash-pinned Legacy SQLite snapshot, checks the image import as UID 1000, and validates rendered compose hardening/no-host-port conditions before it starts a candidate on the Caddy network.
+Every execution requires operator-provided provenance: an exact GitHub archive SHA-256, full release Git SHA, unique UTC candidate timestamp, exact Core SQLite source, accepted-state source, Legacy SQLite source, an approved WAL-aware logical-backup executable, Caddy network/upstream name, allowed HTTPS origin, and a semantic browser validation command. The archive URL is derived only from the full release Git SHA unless explicitly supplied as the equivalent immutable commit archive URL; branch URLs are rejected. After extraction, the archive root must identify that exact commit. The runner creates a unique owner-only candidate root and project/container name, verifies archive and state-copy manifests byte-for-byte, makes the Core copy exclusively with `sqlite3.Connection.backup()`, requires a sidecar-free hash-pinned Legacy SQLite snapshot, checks the image import as UID 1000, and validates rendered compose hardening/no-host-port conditions before it starts a candidate on the Caddy network.
 
 Example **plan** (no writes, Docker, Caddy, or Mini changes):
 
@@ -44,7 +44,7 @@ python3 tools/apc_mini_release.py preflight \
   --github-archive-sha256 '<exact archive sha256>' \
   --release-git-sha '<exact 40-char git sha>' \
   --candidate-timestamp 'YYYYMMDDTHHMMSSZ' \
-  --legacy-mdb '/required/legacy.mdb' \
+  --legacy-source-sqlite '/required/legacy.sqlite' \
   --accepted-state-source '/required/accepted-state' \
   --core-source-sqlite '/required/core.sqlite' \
   --allowed-origin 'https://mini.example.invalid' \

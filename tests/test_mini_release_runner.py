@@ -31,8 +31,10 @@ class MiniReleaseRunnerTests(unittest.TestCase):
                 "preflight",
                 "--github-archive-sha256",
                 "a" * 64,
-                "--legacy-mdb",
-                "/input/legacy.mdb",
+                "--release-git-sha",
+                "f" * 40,
+                "--legacy-source-sqlite",
+                "/input/legacy.sqlite",
                 "--accepted-state-source",
                 "/input/accepted-state",
                 "--allowed-origin",
@@ -47,6 +49,34 @@ class MiniReleaseRunnerTests(unittest.TestCase):
         self.assertTrue(args.dry_run)
         self.assertEqual(args.phase, "preflight")
         self.assertFalse(getattr(args, "promote", False))
+
+    def test_archive_url_is_derived_only_from_the_full_release_commit_sha(self):
+        runner = load_runner()
+
+        archive_url = runner.resolve_archive_url(None, "f" * 40)
+
+        self.assertEqual(archive_url, f"https://github.com/saibunaa/apc-core/archive/{'f' * 40}.tar.gz")
+        self.assertNotIn("refs/heads/main", archive_url)
+
+    def test_explicit_archive_url_for_a_different_commit_fails_closed(self):
+        runner = load_runner()
+
+        with self.assertRaisesRegex(runner.ReleaseError, "must identify the exact release Git SHA"):
+            runner.resolve_archive_url(
+                "https://github.com/saibunaa/apc-core/archive/" + "e" * 40 + ".tar.gz",
+                "f" * 40,
+            )
+
+    def test_archive_root_commit_identity_mismatch_fails_closed(self):
+        runner = load_runner()
+        with tempfile.TemporaryDirectory() as directory:
+            source_root = Path(directory) / "source"
+            code_root = source_root / ("apc-core-" + "e" * 40)
+            (code_root / "apc_core").mkdir(parents=True)
+            (code_root / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(runner.ReleaseError, "commit identity mismatch"):
+                runner.verify_archive_commit_identity(code_root, "f" * 40)
 
     def test_candidate_identity_is_unique_and_deterministic_from_release_sha(self):
         runner = load_runner()
@@ -104,7 +134,7 @@ class MiniReleaseRunnerTests(unittest.TestCase):
         for required in (
             "sqlite3.Connection.backup(",
             "--github-archive-sha256",
-            "--legacy-mdb",
+            "--legacy-source-sqlite",
             "--allowed-origin",
             "--caddy-network",
             "--upstream-name",
@@ -128,6 +158,9 @@ class MiniReleaseRunnerTests(unittest.TestCase):
         ):
             self.assertIn(required, source)
         self.assertNotIn("rm -rf", source)
+        self.assertNotIn("legacy-mdb", source)
+        self.assertNotIn("MDB", source)
+        self.assertNotIn("NAS", source)
         self.assertNotIn("restart caddy", source.lower())
         self.assertNotIn("docker compose up", source.lower())
 
