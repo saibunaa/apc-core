@@ -27,6 +27,9 @@ from typing import Iterable
 
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+GITHUB_COMMIT_ARCHIVE = re.compile(
+    r"^https://github\.com/saibunaa/apc-core/archive/([0-9a-f]{40})\.tar\.gz$"
+)
 
 
 class ReleaseError(RuntimeError):
@@ -47,6 +50,18 @@ def candidate_identity(git_sha: str, stamp: str) -> CandidateIdentity:
         raise ReleaseError("candidate timestamp must be UTC in YYYYMMDDTHHMMSSZ form")
     name = f"apc-core-mini-{git_sha[:10]}-{stamp}"
     return CandidateIdentity(name, name, name)
+
+
+def resolve_archive_url(archive_url: str | None, release_git_sha: str) -> str:
+    """Accept only an immutable archive for the declared full release commit."""
+    if not GIT_SHA.fullmatch(release_git_sha):
+        raise ReleaseError("release Git SHA must be exactly 40 lower-case hexadecimal characters")
+    if archive_url is None:
+        return f"https://github.com/saibunaa/apc-core/archive/{release_git_sha}.tar.gz"
+    match = GITHUB_COMMIT_ARCHIVE.fullmatch(archive_url)
+    if not match or match.group(1) != release_git_sha:
+        raise ReleaseError("GitHub archive URL must identify the exact release Git SHA")
+    return archive_url
 
 
 def verify_sha256(path: Path, expected: str, *, label: str) -> str:
@@ -125,6 +140,14 @@ def discover_core_source(extracted_root: Path) -> Path:
     return candidates[0]
 
 
+def verify_archive_commit_identity(code_root: Path, release_git_sha: str) -> None:
+    expected_name = f"apc-core-{release_git_sha}"
+    if code_root.name != expected_name:
+        raise ReleaseError(
+            f"GitHub archive commit identity mismatch: expected {expected_name}, got {code_root.name}"
+        )
+
+
 def copy_accepted_state(source: Path, destination: Path) -> dict[str, str]:
     if not source.is_dir():
         raise ReleaseError(f"accepted-state source is not a directory: {source}")
@@ -179,27 +202,29 @@ def compose_env(args: argparse.Namespace, candidate: Path, identity: CandidateId
 def require_common(args: argparse.Namespace) -> None:
     if not args.allowed_origin.startswith("https://"):
         raise ReleaseError("allowed origin must be an explicit HTTPS origin")
-    if not Path(args.legacy_mdb).is_file() and not args.dry_run:
-        raise ReleaseError("legacy MDB source must exist before execution")
+    if not Path(args.legacy_source_sqlite).is_file() and not args.dry_run:
+        raise ReleaseError("legacy SQLite source must exist before execution")
     if not args.caddy_network or not args.upstream_name:
         raise ReleaseError("Caddy network and one upstream name are required provenance inputs")
 
 
 def plan_preflight(args: argparse.Namespace, candidate: Path, identity: CandidateIdentity) -> None:
     require_common(args)
+    archive_url = resolve_archive_url(args.github_archive_url, args.release_git_sha)
     archive = candidate / "github-source.tar.gz"
     source_root = candidate / "source"
     print(f"candidate root: {candidate} (0700 owner-only); project/container: {identity.project_name}")
     if not args.dry_run:
         candidate.mkdir(mode=0o700, parents=False, exist_ok=False)
         require_owner_only(candidate)
-    run(["curl", "--fail", "--location", "--proto", "=https", "--tlsv1.2", "--output", str(archive), args.github_archive_url], execute=not args.dry_run)
+    run(["curl", "--fail", "--location", "--proto", "=https", "--tlsv1.2", "--output", str(archive), archive_url], execute=not args.dry_run)
     if not args.dry_run:
         # The archive bytes are accepted only after the caller-provided exact GitHub archive SHA matches.
         verify_sha256(archive, args.github_archive_sha256, label="GitHub archive")
         source_root.mkdir(mode=0o755)
         safe_extract(archive, source_root)
         code_root = discover_core_source(source_root)
+        verify_archive_commit_identity(code_root, args.release_git_sha)
         require_code_readable(code_root)
         (candidate / "source-root.txt").write_text(str(code_root.relative_to(candidate)) + "\n", encoding="utf-8")
 
@@ -228,11 +253,11 @@ def plan_validate(args: argparse.Namespace, candidate: Path, identity: Candidate
             raise ReleaseError("legacy logical backup command is required for execution")
         # Command receives only named source/output arguments and must produce a WAL-aware logical SQLite snapshot.
         legacy.parent.mkdir(mode=0o700, parents=True, exist_ok=False)
-        run([*args.legacy_logical_backup_command, "--source", args.legacy_mdb, "--output", str(legacy)], execute=True)
+        run([*args.legacy_logical_backup_command, "--source", args.legacy_source_sqlite, "--output", str(legacy)], execute=True)
         assert_sidecar_free(legacy)
         legacy_sha = hashlib.sha256(legacy.read_bytes()).hexdigest()
         verify_tree_manifest(accepted, accepted_manifest)
-        provenance = {"core_source": str(source), "core_copy_sha256": exact_source_digest, "legacy_mdb": args.legacy_mdb, "legacy_snapshot_sha256": legacy_sha}
+        provenance = {"core_source": str(source), "core_copy_sha256": exact_source_digest, "legacy_source_sqlite": args.legacy_source_sqlite, "legacy_snapshot_sha256": legacy_sha}
         (candidate / "provenance.json").write_text(json.dumps(provenance, sort_keys=True) + "\n", encoding="utf-8")
     else:
         legacy_sha = "0" * 64
@@ -280,12 +305,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="phase", required=True)
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--github-archive-url", default="https://github.com/saibunaa/apc-core/archive/refs/heads/main.tar.gz")
+    common.add_argument("--github-archive-url")
     common.add_argument("--github-archive-sha256", required=True)
-    common.add_argument("--release-git-sha", default="0" * 40)
+    common.add_argument("--release-git-sha", required=True)
     common.add_argument("--candidate-base", default="/srv/apc-core-candidates")
     common.add_argument("--candidate-timestamp", default=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
-    common.add_argument("--legacy-mdb", required=True)
+    common.add_argument("--legacy-source-sqlite", required=True)
     common.add_argument("--accepted-state-source", required=True)
     common.add_argument("--core-source-sqlite", default="/REQUIRED/EXACT/CORE.sqlite")
     common.add_argument("--legacy-logical-backup-command", nargs="+", default=[])
